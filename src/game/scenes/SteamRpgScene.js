@@ -6,22 +6,26 @@ import {
   SIDEBAR_X,
   TILE,
   WORLD,
-  enemyTemplate,
   itemData,
   palette,
-  partyTemplate,
   bossResistancePlan,
   statusRules,
   devTools,
   valveSequence,
   worldTiles,
 } from '../config/gameData.js';
+import { encounters } from '../content/encounters.js';
+import { mobs } from '../content/mobs/index.js';
+import { partyTemplate } from '../content/party.js';
 import {
   applyStatus,
+  chooseAction,
   clearBattleStatuses,
   cloneBattlers,
+  createEncounterMobs,
   hasStatus,
   rollAttackDamage,
+  resolveAttackAction,
   statusLabel,
   tickStatuses,
 } from '../systems/combat.js';
@@ -288,7 +292,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.drawPanel(154, 72, 652, 392, 'Status Reference');
     this.add.text(188, 116, 'Combat-only mechanical conditions', this.textStyle(18, palette.amber)).setFontStyle('700');
 
-    Object.values(statusRules).forEach((rule, index) => {
+    Object.entries(statusRules).forEach(([name, rule], index) => {
       const y = 150 + index * 56;
       this.add.rectangle(480, y + 20, 562, 50, 0x211713).setStrokeStyle(1, palette.brass);
       this.add.text(214, y, rule.label, this.textStyle(16, palette.cream)).setFontStyle('700');
@@ -471,7 +475,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.mode = BATTLE;
     this.inMenu = false;
     this.activeUnitIndex = null;
-    this.battleEnemies = cloneBattlers(enemyTemplate);
+    this.battleEnemies = createEncounterMobs(encounters.factoryAmbush, mobs);
     this.addLog('Ambushed by coal-smoke machines. ATB continues while menus are open.');
     this.playSfx('battle');
     this.renderBattle();
@@ -646,7 +650,7 @@ class SteamRpgScene extends Phaser.Scene {
       const target = this.battleEnemies.find((unit) => unit.hp > 0);
       const { damage, critical } = this.rollDamage(skill.power, actor, target);
       target.hp = Math.max(0, target.hp - damage);
-      if (skill.status && Math.random() < 0.75) this.applyStatus(target, skill.status);
+      if (skill.status && Math.random() < (skill.statusChance ?? 1)) this.applyStatus(target, skill.status);
       if (skill.selfStatus) this.applyStatus(actor, skill.selfStatus, 4);
       this.spawnDamageNumber(target.x, target.y - 54, damage, critical, 'damage');
       this.addLog(`${actor.name} uses ${skill.name} for ${damage} damage${critical ? ' - CRITICAL!' : '.'}`);
@@ -672,18 +676,20 @@ class SteamRpgScene extends Phaser.Scene {
       }
     }
 
-    const { damage, critical } = this.rollDamage(17, enemy, target, 0.1);
-    target.hp = Math.max(0, target.hp - damage);
-    this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, damage, critical, 'damage');
-
+    const action = chooseAction(enemy);
+    const result = this.resolveEnemyAction(enemy, action, target);
+    target.hp = Math.max(0, target.hp - result.damage);
+    this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, result.damage, result.critical, 'damage');
     this.tickGlobalStatuses();
-    if (enemy.name === 'Valve Imp' && Math.random() < 0.5) this.applyStatus(target, 'jamming');
-    if (enemy.name === 'Rust Hound' && Math.random() < 0.35) this.applyStatus(target, 'burned');
-    if (Math.random() < 0.12) this.applyStatus(target, 'stunned');
+    if (result.status) this.applyStatus(target, result.status.name, result.status.turns);
 
     enemy.atb = 0;
     this.tickStatuses(enemy);
-    this.addLog(`${enemy.name} hits ${target.name} for ${damage}${critical ? ' - critical!' : '.'}`);
+    this.addLog(
+      `${enemy.name} ${action.log || `uses ${action.name}`} on ${target.name} for ${result.damage}${
+        result.critical ? ' - critical!' : '.'
+      }`,
+    );
     this.playSfx('enemy');
     this.enemyActing = false;
     this.renderBattle();
@@ -734,6 +740,12 @@ class SteamRpgScene extends Phaser.Scene {
       return rollAttackDamage(basePower, attacker, target, 1);
     }
     return rollAttackDamage(basePower, attacker, target, criticalChance);
+  }
+
+  resolveEnemyAction(enemy, action, target) {
+    const result = resolveAttackAction(action, enemy, target, this.forceNextCritical);
+    if (this.forceNextCritical) this.forceNextCritical = false;
+    return result;
   }
 
   spawnDamageNumber(x, y, amount, critical, type) {

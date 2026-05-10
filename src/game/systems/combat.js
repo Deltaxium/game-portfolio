@@ -3,9 +3,24 @@ import { statusRules } from '../config/gameData.js';
 export function cloneBattlers(template) {
   return template.map((unit) => ({
     ...unit,
+    actions: unit.actions ? unit.actions.map((action) => ({ ...action })) : undefined,
     skills: unit.skills ? unit.skills.map((skill) => ({ ...skill })) : undefined,
     statuses: [],
   }));
+}
+
+export function createEncounterMobs(encounter, mobCatalog) {
+  return encounter.mobs.map((entry) => {
+    const mob = mobCatalog[entry.mobId];
+    if (!mob) {
+      throw new Error(`Unknown mob id in encounter: ${entry.mobId}`);
+    }
+    return {
+      ...cloneBattlers([mob])[0],
+      x: entry.x,
+      y: entry.y,
+    };
+  });
 }
 
 export function hasStatus(unit, name) {
@@ -41,6 +56,39 @@ export function rollAttackDamage(basePower, attacker, target, criticalChance = 0
     basePower * outgoingDamageMultiplier(attacker) * incomingDamageMultiplier(target) * criticalMultiplier,
   );
   return { damage, critical };
+}
+
+export function chooseAction(unit) {
+  if (!unit.actions?.length) {
+    return {
+      id: 'basic-attack',
+      name: 'Attack',
+      power: 12,
+      target: 'party-random',
+      criticalChance: 0.1,
+      log: 'attacks',
+    };
+  }
+  return unit.actions[Math.floor(Math.random() * unit.actions.length)];
+}
+
+export function resolveAttackAction(action, attacker, target, forceCritical = false) {
+  const criticalChance = forceCritical ? 1 : action.criticalChance;
+  const { damage, critical } = rollAttackDamage(action.power, attacker, target, criticalChance);
+  return {
+    action,
+    attacker,
+    target,
+    damage,
+    critical,
+    status:
+      action.status && Math.random() < (action.statusChance ?? 1)
+        ? {
+            name: action.status,
+            turns: action.statusTurns,
+          }
+        : null,
+  };
 }
 
 export function applyStatus(unit, name, turns = statusRules[name]?.defaultTurns) {

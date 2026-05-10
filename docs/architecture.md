@@ -26,12 +26,22 @@ Avoid putting large static tables or reusable rules in the scene.
 
 - palette
 - map layout
-- party/enemy templates
 - item descriptions
 - status descriptions
 - layout constants
 
 Add new game content here unless it needs runtime behavior.
+
+## Content
+
+`src/game/content` contains reusable game content definitions:
+
+- `party.js`: playable party templates and skills
+- `mobs/*.js`: one mob per file, including stats, visual tint, and action definitions
+- `mobs/index.js`: mob catalog
+- `encounters.js`: encounter composition and mob placement
+
+Do not hard-code mob names in combat calculations. If a mob needs a different attack, status chance, or critical rate, add or edit an action in that mob file. If an encounter needs different enemy placement, edit `encounters.js`.
 
 ## Systems
 
@@ -41,6 +51,8 @@ Current systems:
 
 - `combat.js`: status helpers, damage multiplier, battler cloning
 - `audio.js`: generated sound effects through Phaser's WebAudio context
+
+Combat systems should be content-agnostic. They may read action properties such as `power`, `status`, `statusChance`, and `criticalChance`, but should not branch on specific mob names.
 
 ## UI Helpers
 

@@ -6,6 +6,10 @@
 - Status effects must have both visible UI feedback and gameplay impact.
 - Prefer small pure helpers for combat math instead of embedding formulas in render code.
 - Avoid hidden progression requirements; reflect gates in inventory, objectives, or messages.
+- Put each mob in its own `src/game/content/mobs/*.js` file.
+- Put encounter composition in `src/game/content/encounters.js`.
+- Do not hard-code enemy names in scene or combat-system logic.
+- Model mob behavior as action data: `power`, `target`, `status`, `statusChance`, `criticalChance`, and log copy.
 
 ## Phaser
 

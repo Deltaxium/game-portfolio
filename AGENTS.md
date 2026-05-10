@@ -8,6 +8,7 @@ Before editing, read:
 2. `docs/architecture.md`
 3. `docs/best-practices.md`
 4. `docs/linting-and-checks.md`
+5. `docs/content-authoring.md`
 
 ## Working Rules
 
