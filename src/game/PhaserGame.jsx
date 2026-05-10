@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-import DemoScene from './scenes/DemoScene.js';
+import SteamRpgScene from './scenes/SteamRpgScene.js';
 
 function PhaserGame() {
   const containerRef = useRef(null);
@@ -16,7 +16,7 @@ function PhaserGame() {
       parent: containerRef.current,
       width: 960,
       height: 540,
-      backgroundColor: '#171c22',
+      backgroundColor: '#21130f',
       scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
@@ -28,7 +28,7 @@ function PhaserGame() {
           debug: false,
         },
       },
-      scene: [DemoScene],
+      scene: [SteamRpgScene],
     });
 
     return () => {

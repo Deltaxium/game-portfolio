@@ -2,19 +2,19 @@ import PhaserGame from './game/PhaserGame.jsx';
 
 const projects = [
   {
-    title: 'Arcade Prototype',
-    status: 'Playable demo',
-    description: 'A compact Phaser scene embedded in React, ready to swap for your first portfolio game.',
+    title: 'Top-Down Exploration',
+    status: 'Prototype',
+    description: 'Walk the factory district, collect a brass key, solve a valve puzzle, and unlock gated routes.',
   },
   {
-    title: 'Firebase Ready',
-    status: 'Hosting configured',
-    description: 'Built files publish from GitHub Actions to Firebase Hosting after each push to main.',
+    title: 'Side-View ATB Combat',
+    status: 'Playable',
+    description: 'Party members stand on the right, enemies on the left, and ATB gauges keep filling during menus.',
   },
   {
-    title: 'GitHub Pages',
-    status: 'CI deploy configured',
-    description: 'The same production build can also publish as a public GitHub Pages portfolio.',
+    title: 'Mechanical Status Effects',
+    status: 'Systems',
+    description: 'Jam, burn, stun, and overheat states can reduce damage output, fail commands, or skip actions.',
   },
 ];
 
@@ -23,10 +23,10 @@ function App() {
     <main className="app-shell">
       <section className="intro">
         <div>
-          <p className="eyebrow">Phaser + React</p>
-          <h1>Game Portfolio</h1>
+          <p className="eyebrow">Steampunk Era RPG</p>
+          <h1>Cinderworks</h1>
           <p className="intro-copy">
-            A lean starter for publishing playable browser games with Firebase Hosting and GitHub Pages.
+            A playable Phaser vertical slice with top-down exploration, gated puzzle progress, and side-view ATB battles.
           </p>
         </div>
         <a className="repo-link" href="https://github.com/" target="_blank" rel="noreferrer">
