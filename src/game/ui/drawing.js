@@ -10,6 +10,13 @@ export function textStyle(size, color) {
   };
 }
 
+export function wrappedTextStyle(size, color, width) {
+  return {
+    ...textStyle(size, color),
+    wordWrap: { width, useAdvancedWrap: true },
+  };
+}
+
 export function drawPanel(scene, x, y, width, height, title) {
   scene.add.rectangle(x + width / 2, y + height / 2, width, height, palette.panel)
     .setStrokeStyle(3, palette.brass);
@@ -25,4 +32,15 @@ export function drawBar(scene, x, y, width, height, ratio, color) {
   scene.add.rectangle(x + width / 2, y + height / 2, width, height, palette.panelDark)
     .setStrokeStyle(1, palette.brass);
   scene.add.rectangle(x + (width * safeRatio) / 2, y + height / 2, width * safeRatio, height, color);
+}
+
+export function drawValveMarker(scene, x, y, solved) {
+  const ringColor = solved ? palette.green : palette.amber;
+  const centerColor = solved ? palette.brass : palette.red;
+
+  scene.add.circle(x, y, 18, palette.coal).setStrokeStyle(3, ringColor);
+  scene.add.circle(x, y, 13, centerColor).setStrokeStyle(2, palette.cream);
+  scene.add.line(x, y, -13, 0, 13, 0, palette.cream).setLineWidth(3);
+  scene.add.line(x, y, 0, -13, 0, 13, palette.cream).setLineWidth(3);
+  scene.add.circle(x, y, 5, palette.panelDark).setStrokeStyle(1, ringColor);
 }

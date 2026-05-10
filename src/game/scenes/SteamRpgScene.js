@@ -10,20 +10,23 @@ import {
   itemData,
   palette,
   partyTemplate,
+  bossResistancePlan,
   statusRules,
+  devTools,
   valveSequence,
   worldTiles,
 } from '../config/gameData.js';
 import {
   applyStatus,
+  clearBattleStatuses,
   cloneBattlers,
-  damageMultiplier,
   hasStatus,
+  rollAttackDamage,
   statusLabel,
   tickStatuses,
 } from '../systems/combat.js';
 import { playSfx } from '../systems/audio.js';
-import { drawBar, drawPanel, textStyle } from '../ui/drawing.js';
+import { drawBar, drawPanel, drawValveMarker, textStyle, wrappedTextStyle } from '../ui/drawing.js';
 
 class SteamRpgScene extends Phaser.Scene {
   constructor() {
@@ -43,12 +46,17 @@ class SteamRpgScene extends Phaser.Scene {
     this.activeUnitIndex = null;
     this.inMenu = false;
     this.inventoryOpen = false;
+    this.statusMenuOpen = false;
+    this.seenStatusPrompts = new Set();
     this.valveInput = [];
     this.valveSolved = false;
     this.gateOpen = false;
     this.enemyCleared = false;
     this.gameComplete = false;
     this.lastBattleRender = 0;
+    this.damagePopups = [];
+    this.devToolsOpen = false;
+    this.forceNextCritical = false;
 
     this.createTextures();
     this.createWorld();
@@ -96,17 +104,31 @@ class SteamRpgScene extends Phaser.Scene {
 
   createInput() {
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys('W,A,S,D,I,SPACE,ENTER,ESC,UP,DOWN');
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,I,B,K,V,L,C,R,H,SPACE,ENTER,ESC,UP,DOWN');
 
     this.input.keyboard.on('keydown-SPACE', () => this.handleConfirm());
     this.input.keyboard.on('keydown-ENTER', () => this.handleConfirm());
     this.input.keyboard.on('keydown-I', () => this.toggleInventory());
+    this.input.keyboard.on('keydown-H', () => this.toggleStatusMenu());
     this.input.keyboard.on('keydown-UP', () => this.moveMenu(-1));
     this.input.keyboard.on('keydown-DOWN', () => this.moveMenu(1));
+    this.input.keyboard.on('keydown-BACKTICK', () => this.toggleDevTools());
+    this.input.keyboard.on('keydown-B', () => this.devStartBattle());
+    this.input.keyboard.on('keydown-K', () => this.devGrantTools());
+    this.input.keyboard.on('keydown-V', () => this.devSolveValve());
+    this.input.keyboard.on('keydown-L', () => this.devGrantFuse());
+    this.input.keyboard.on('keydown-C', () => this.devForceCritical());
+    this.input.keyboard.on('keydown-R', () => this.devReset());
     this.input.keyboard.on('keydown-ESC', () => {
       if (this.inventoryOpen) {
         this.inventoryOpen = false;
         this.renderWorld();
+        return;
+      }
+
+      if (this.statusMenuOpen) {
+        this.statusMenuOpen = false;
+        this.renderCurrentMode();
         return;
       }
 
@@ -141,6 +163,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.drawSidebar();
     this.drawMessagePanel();
     if (this.inventoryOpen) this.drawInventoryOverlay();
+    if (this.statusMenuOpen) this.drawStatusReferenceOverlay();
+    if (this.devToolsOpen) this.drawDevTools();
   }
 
   drawWorldFrame() {
@@ -176,7 +200,7 @@ class SteamRpgScene extends Phaser.Scene {
       this.add.line(px + 17, py + 17, 0, 0, 8, -6, palette.red).setLineWidth(2);
     }
     if (tile === 'V') {
-      this.add.image(px + 17, py + 17, this.valveSolved ? 'gear' : 'red-gear').setScale(0.38);
+      drawValveMarker(this, px + 17, py + 17, this.valveSolved);
     }
     if (tile === 'G' && !this.gateOpen) {
       this.add.rectangle(px + 17, py + 17, 26, 31, palette.red).setStrokeStyle(2, palette.amber);
@@ -225,33 +249,78 @@ class SteamRpgScene extends Phaser.Scene {
 
   drawMessagePanel() {
     this.add.image(44, 466, 'gear').setScale(0.45).setAlpha(0.8);
-    this.add.text(78, 444, this.messageLog.at(-2) || '', this.textStyle(15, palette.cream));
-    this.add.text(78, 472, this.messageLog.at(-1) || '', this.textStyle(15, palette.amber));
-    this.add.text(734, 488, 'Move WASD/Arrows  Interact Space  Inventory I', this.textStyle(13, palette.cream));
+    this.add.text(78, 442, this.messageLog.at(-2) || '', this.wrappedTextStyle(15, palette.cream, 590));
+    this.add.text(78, 470, this.messageLog.at(-1) || '', this.wrappedTextStyle(15, palette.amber, 590));
+    this.add.text(724, 444, 'WASD / Arrows', this.textStyle(13, palette.cream)).setFontStyle('700');
+    this.add.text(724, 468, 'Space / Enter', this.textStyle(13, palette.cream)).setFontStyle('700');
+    this.add.text(724, 492, 'I Inventory  H Status', this.textStyle(13, palette.cream)).setFontStyle('700');
   }
 
   drawInventoryOverlay() {
     this.add.rectangle(480, 270, 960, 540, 0x000000, 0.45);
-    this.drawPanel(206, 76, 548, 382, 'Inventory and Status');
-    this.add.text(238, 122, 'Satchel', this.textStyle(22, palette.amber)).setFontStyle('700');
+    this.drawPanel(118, 72, 724, 390, 'Inventory and Status');
+    this.drawPanel(146, 120, 408, 294, 'Satchel');
+    this.drawPanel(580, 120, 234, 294, 'Party');
 
     Object.entries(itemData).forEach(([item, description], index) => {
-      const y = 162 + index * 66;
+      const y = 166 + index * 74;
       const owned = this.inventory.has(item);
-      this.add.rectangle(478, y + 18, 470, 50, owned ? 0x3a2519 : 0x211713).setStrokeStyle(1, owned ? palette.brass : palette.gray);
-      this.add.text(258, y, `${owned ? '[x]' : '[ ]'} ${item}`, this.textStyle(16, owned ? palette.cream : palette.gray)).setFontStyle('700');
-      this.add.text(258, y + 24, description, this.textStyle(13, owned ? palette.amber : palette.gray));
+      this.add.rectangle(350, y + 22, 360, 56, owned ? 0x3a2519 : 0x211713)
+        .setStrokeStyle(1, owned ? palette.brass : palette.gray);
+      this.add.text(188, y, `${owned ? '[x]' : '[ ]'} ${item}`, this.textStyle(16, owned ? palette.cream : palette.gray)).setFontStyle('700');
+      this.add.text(188, y + 26, description, this.wrappedTextStyle(13, owned ? palette.amber : palette.gray, 322));
     });
 
-    this.add.text(238, 374, 'Party Status', this.textStyle(18, palette.amber)).setFontStyle('700');
     this.party.forEach((unit, index) => {
-      this.add.text(258 + index * 228, 406, `${unit.name} HP ${unit.hp}/${unit.maxHp}`, this.textStyle(14, palette.cream));
-      this.add.text(258 + index * 228, 428, statusLabel(unit), this.textStyle(12, palette.amber));
+      const y = 164 + index * 112;
+      this.add.rectangle(697, y + 28, 176, 74, 0x211713).setStrokeStyle(1, palette.brass);
+      this.add.text(620, y, unit.name, this.textStyle(17, palette.amber)).setFontStyle('700');
+      this.add.text(620, y + 25, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(14, palette.cream));
+      this.drawBar(620, y + 48, 154, 10, unit.hp / unit.maxHp, palette.green);
+      this.add.text(620, y + 64, statusLabel(unit), this.wrappedTextStyle(12, palette.amber, 154));
     });
+
+    this.add.text(148, 430, 'Esc or I closes this menu.', this.textStyle(12, palette.gray));
+  }
+
+  drawStatusReferenceOverlay() {
+    this.add.rectangle(480, 270, 960, 540, 0x000000, 0.48);
+    this.drawPanel(154, 72, 652, 392, 'Status Reference');
+    this.add.text(188, 116, 'Combat-only mechanical conditions', this.textStyle(18, palette.amber)).setFontStyle('700');
+
+    Object.values(statusRules).forEach((rule, index) => {
+      const y = 150 + index * 56;
+      this.add.rectangle(480, y + 20, 562, 50, 0x211713).setStrokeStyle(1, palette.brass);
+      this.add.text(214, y, rule.label, this.textStyle(16, palette.cream)).setFontStyle('700');
+      this.add.text(214, y + 24, rule.summary, this.wrappedTextStyle(13, palette.amber, 512));
+      this.add.text(704, y, name, this.textStyle(11, palette.gray));
+    });
+
+    this.add.text(214, 386, 'Planned boss resistances', this.textStyle(15, palette.amber)).setFontStyle('700');
+    Object.entries(bossResistancePlan).forEach(([boss, plan], index) => {
+      const y = 410 + index * 16;
+      this.add.text(214, y, `${boss}: resists ${plan.resists.join(', ')}`, this.textStyle(11, palette.cream));
+    });
+
+    this.add.text(188, 448, 'Esc or H closes this menu.', this.textStyle(12, palette.gray));
+  }
+
+  drawDevTools() {
+    this.drawPanel(632, 88, 288, 210, 'Developer Tools');
+    this.add.text(656, 126, 'Prototype hotkeys', this.textStyle(15, palette.amber)).setFontStyle('700');
+    devTools.forEach((line, index) => {
+      this.add.text(656, 154 + index * 18, line, this.textStyle(13, palette.cream));
+    });
+    this.add.text(
+      656,
+      282,
+      `Mode ${this.mode}  Crit ${this.forceNextCritical ? 'armed' : 'normal'}`,
+      this.textStyle(12, palette.green),
+    );
   }
 
   updateWorldMovement() {
-    if (this.inventoryOpen || this.worldMoveLocked) return;
+    if (this.inventoryOpen || this.statusMenuOpen || this.worldMoveLocked) return;
     const direction = this.readDirection();
     if (!direction) return;
 
@@ -322,11 +391,19 @@ class SteamRpgScene extends Phaser.Scene {
 
   handleConfirm() {
     if (this.mode === WORLD) {
-      if (this.inventoryOpen) {
-        this.toggleInventory();
+      if (this.inventoryOpen || this.statusMenuOpen) {
+        this.inventoryOpen = false;
+        this.statusMenuOpen = false;
+        this.renderWorld();
         return;
       }
       this.interactWorld();
+      return;
+    }
+
+    if (this.statusMenuOpen) {
+      this.statusMenuOpen = false;
+      this.renderCurrentMode();
       return;
     }
 
@@ -338,8 +415,16 @@ class SteamRpgScene extends Phaser.Scene {
   toggleInventory() {
     if (this.mode !== WORLD) return;
     this.inventoryOpen = !this.inventoryOpen;
+    this.statusMenuOpen = false;
     this.playSfx('menu');
     this.renderWorld();
+  }
+
+  toggleStatusMenu() {
+    this.statusMenuOpen = !this.statusMenuOpen;
+    if (this.statusMenuOpen) this.inventoryOpen = false;
+    this.playSfx('menu');
+    this.renderCurrentMode();
   }
 
   interactWorld() {
@@ -399,7 +484,10 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.rectangle(480, 366, 930, 8, palette.copper);
 
     this.drawBattleActors();
+    this.drawDamagePopups();
     this.drawBattleHud();
+    if (this.statusMenuOpen) this.drawStatusReferenceOverlay();
+    if (this.devToolsOpen) this.drawDevTools();
   }
 
   drawBattleActors() {
@@ -424,41 +512,41 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   drawBattleHud() {
-    this.drawPanel(18, 386, 924, 136, 'Command Deck');
-    this.add.text(42, 422, this.messageLog.at(-1) || '', this.textStyle(15, palette.cream));
+    this.drawPanel(18, 386, 594, 136, 'Command Deck');
+    this.drawPanel(626, 386, 316, 136, this.inMenu && this.activeUnitIndex !== null ? 'Orders' : 'Status');
+    this.add.text(42, 420, this.messageLog.at(-1) || '', this.wrappedTextStyle(15, palette.cream, 530));
 
     this.party.forEach((unit, index) => {
-      const x = 42 + index * 240;
-      const y = 456;
+      const x = 42 + index * 270;
+      const y = 460;
       this.add.text(x, y, `${unit.name}  ${unit.role}`, this.textStyle(13, palette.amber)).setFontStyle('700');
       this.add.text(x, y + 22, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(13, palette.cream));
-      this.drawBar(x + 82, y + 27, 132, 10, unit.atb / 100, palette.amber);
+      this.drawBar(x + 82, y + 27, 138, 10, unit.atb / 100, palette.amber);
       this.add.text(x, y + 45, statusLabel(unit), this.textStyle(12, palette.cream));
     });
 
-    this.drawStatusLegend();
-
     if (this.inMenu && this.activeUnitIndex !== null) {
       this.drawCommandMenu();
+    } else {
+      this.drawStatusLegend();
     }
   }
 
   drawCommandMenu() {
     const unit = this.party[this.activeUnitIndex];
-    this.drawPanel(610, 404, 306, 102, `${unit.name} Orders`);
+    this.add.text(650, 420, unit.name, this.textStyle(13, palette.amber)).setFontStyle('700');
     unit.skills.forEach((skill, index) => {
-      const y = 430 + index * 24;
+      const y = 444 + index * 22;
       const selected = index === this.selectedCommand;
-      this.add.rectangle(760, y + 9, 266, 22, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
-      this.add.text(636, y, `${selected ? '>' : ' '} ${skill.name}`, this.textStyle(15, selected ? palette.amber : palette.cream));
+      this.add.rectangle(784, y + 9, 270, 20, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
+      this.add.text(650, y, `${selected ? '>' : ' '} ${skill.name}`, this.textStyle(14, selected ? palette.amber : palette.cream));
     });
-    this.add.text(636, 498, unit.skills[this.selectedCommand].description, this.textStyle(11, palette.cream));
+    this.add.text(650, 510, unit.skills[this.selectedCommand].description, this.wrappedTextStyle(11, palette.cream, 260));
   }
 
   drawStatusLegend() {
-    this.add.text(516, 454, 'Status', this.textStyle(13, palette.amber)).setFontStyle('700');
-    Object.entries(statusRules).forEach(([name, rule], index) => {
-      this.add.text(516, 474 + index * 12, `${name}: ${rule}`, this.textStyle(10, palette.cream));
+    Object.values(statusRules).forEach((rule, index) => {
+      this.add.text(650, 420 + index * 24, `${rule.label}: ${rule.summary}`, this.wrappedTextStyle(10, palette.cream, 260));
     });
   }
 
@@ -471,6 +559,7 @@ class SteamRpgScene extends Phaser.Scene {
 
     if (this.battleEnemies.every((unit) => unit.hp <= 0)) {
       this.enemyCleared = true;
+      this.clearBattleStatuses();
       this.addItem('Aether Fuse');
       this.addLog('Victory. Aether Fuse recovered from the wreckage.');
       this.playSfx('success');
@@ -482,6 +571,7 @@ class SteamRpgScene extends Phaser.Scene {
 
     [...this.party, ...this.battleEnemies].forEach((unit) => {
       if (unit.hp <= 0 || (this.inMenu && this.party.includes(unit))) return;
+      if (hasStatus(unit, 'stunned')) return;
       unit.atb = Math.min(100, unit.atb + (unit.speed * delta) / 1000);
     });
 
@@ -510,7 +600,7 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   moveMenu(direction) {
-    if (!this.inMenu || this.activeUnitIndex === null) return;
+    if (this.statusMenuOpen || !this.inMenu || this.activeUnitIndex === null) return;
     const skills = this.party[this.activeUnitIndex].skills;
     this.selectedCommand = Phaser.Math.Wrap(this.selectedCommand + direction, 0, skills.length);
     this.playSfx('menu');
@@ -522,36 +612,44 @@ class SteamRpgScene extends Phaser.Scene {
     const skill = actor.skills[this.selectedCommand];
 
     if (hasStatus(actor, 'stunned')) {
-      this.addLog(`${actor.name} is stunned and loses the action.`);
+      this.addLog(`${actor.name} is stunned; ATB pressure is paused.`);
       this.playSfx('error');
       this.consumeTurn(actor);
       return;
     }
 
-    if (hasStatus(actor, 'jammed') && Math.random() < 0.35) {
-      this.addLog(`${actor.name}'s gear train jams. Command fails.`);
+    if (hasStatus(actor, 'jamming') && Math.random() < 0.35) {
+      this.addLog(`${actor.name}'s mechanism jams. Command fails.`);
       this.playSfx('error');
       this.consumeTurn(actor);
       return;
     }
 
     if (hasStatus(actor, 'burned')) {
-      actor.hp = Math.max(1, actor.hp - 6);
+      actor.hp = Math.max(0, actor.hp - 8);
+      this.spawnDamageNumber(this.getPartyActorX(actor), this.getPartyActorY(actor) - 58, 8, false, 'damage');
+      this.addLog(`${actor.name} takes 8 burn damage.`);
+      if (actor.hp <= 0) {
+        this.consumeTurn(actor);
+        return;
+      }
     }
 
     if (skill.target === 'ally') {
       const target = this.party.reduce((lowest, unit) => (unit.hp < lowest.hp ? unit : lowest), this.party[0]);
       target.hp = Math.min(target.maxHp, target.hp - skill.power);
       if (skill.cleanse) target.statuses = [];
+      this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, Math.abs(skill.power), false, 'heal');
       this.addLog(`${actor.name} uses ${skill.name} on ${target.name}.`);
       this.playSfx('heal');
     } else {
       const target = this.battleEnemies.find((unit) => unit.hp > 0);
-      const damage = Math.round(skill.power * damageMultiplier(actor));
+      const { damage, critical } = this.rollDamage(skill.power, actor, target);
       target.hp = Math.max(0, target.hp - damage);
-      if (skill.status && Math.random() < 0.75) this.applyStatus(target, skill.status, 2);
-      if (skill.selfStatus) this.applyStatus(actor, skill.selfStatus, 2);
-      this.addLog(`${actor.name} uses ${skill.name} for ${damage} damage.`);
+      if (skill.status && Math.random() < 0.75) this.applyStatus(target, skill.status);
+      if (skill.selfStatus) this.applyStatus(actor, skill.selfStatus, 4);
+      this.spawnDamageNumber(target.x, target.y - 54, damage, critical, 'damage');
+      this.addLog(`${actor.name} uses ${skill.name} for ${damage} damage${critical ? ' - CRITICAL!' : '.'}`);
       this.playSfx('hit');
     }
 
@@ -560,16 +658,32 @@ class SteamRpgScene extends Phaser.Scene {
 
   enemyAction(enemy) {
     const target = Phaser.Utils.Array.GetRandom(this.party.filter((unit) => unit.hp > 0));
-    const damage = Math.round(17 * damageMultiplier(enemy));
-    target.hp = Math.max(0, target.hp - damage);
+    if (hasStatus(enemy, 'burned')) {
+      enemy.hp = Math.max(0, enemy.hp - 8);
+      this.spawnDamageNumber(enemy.x, enemy.y - 54, 8, false, 'damage');
+      this.addLog(`${enemy.name} takes 8 burn damage.`);
+      if (enemy.hp <= 0) {
+        enemy.atb = 0;
+        this.tickStatuses(enemy, 'action');
+        this.tickGlobalStatuses();
+        this.enemyActing = false;
+        this.renderBattle();
+        return;
+      }
+    }
 
-    if (enemy.name === 'Valve Imp' && Math.random() < 0.5) this.applyStatus(target, 'jammed', 3);
-    if (enemy.name === 'Rust Hound' && Math.random() < 0.35) this.applyStatus(target, 'burned', 3);
-    if (Math.random() < 0.12) this.applyStatus(target, 'stunned', 1);
+    const { damage, critical } = this.rollDamage(17, enemy, target, 0.1);
+    target.hp = Math.max(0, target.hp - damage);
+    this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, damage, critical, 'damage');
+
+    this.tickGlobalStatuses();
+    if (enemy.name === 'Valve Imp' && Math.random() < 0.5) this.applyStatus(target, 'jamming');
+    if (enemy.name === 'Rust Hound' && Math.random() < 0.35) this.applyStatus(target, 'burned');
+    if (Math.random() < 0.12) this.applyStatus(target, 'stunned');
 
     enemy.atb = 0;
     this.tickStatuses(enemy);
-    this.addLog(`${enemy.name} hits ${target.name} for ${damage}.`);
+    this.addLog(`${enemy.name} hits ${target.name} for ${damage}${critical ? ' - critical!' : '.'}`);
     this.playSfx('enemy');
     this.enemyActing = false;
     this.renderBattle();
@@ -577,7 +691,8 @@ class SteamRpgScene extends Phaser.Scene {
 
   consumeTurn(unit) {
     unit.atb = 0;
-    this.tickStatuses(unit);
+    this.tickStatuses(unit, 'action');
+    this.tickGlobalStatuses();
     this.inMenu = false;
     this.activeUnitIndex = null;
     this.time.delayedCall(160, () => this.renderBattle());
@@ -590,10 +705,18 @@ class SteamRpgScene extends Phaser.Scene {
 
   applyStatus(unit, name, turns) {
     applyStatus(unit, name, turns);
+    if (!this.seenStatusPrompts.has(name)) {
+      this.seenStatusPrompts.add(name);
+      this.addLog(`${statusRules[name].label}: ${statusRules[name].prompt}`);
+    }
   }
 
-  tickStatuses(unit) {
-    tickStatuses(unit);
+  tickStatuses(unit, durationType) {
+    tickStatuses(unit, durationType);
+  }
+
+  tickGlobalStatuses() {
+    [...this.party, ...this.battleEnemies].forEach((unit) => tickStatuses(unit, 'globalAction'));
   }
 
   replaceWorldTile(target, replacement) {
@@ -603,6 +726,118 @@ class SteamRpgScene extends Phaser.Scene {
   addLog(message) {
     this.messageLog.push(message);
     this.messageLog = this.messageLog.slice(-6);
+  }
+
+  rollDamage(basePower, attacker, target, criticalChance = 0.15) {
+    if (this.forceNextCritical) {
+      this.forceNextCritical = false;
+      return rollAttackDamage(basePower, attacker, target, 1);
+    }
+    return rollAttackDamage(basePower, attacker, target, criticalChance);
+  }
+
+  spawnDamageNumber(x, y, amount, critical, type) {
+    this.damagePopups.push({
+      id: `${Date.now()}-${Math.random()}`,
+      x,
+      y,
+      amount,
+      critical,
+      type,
+      createdAt: this.time.now,
+    });
+  }
+
+  drawDamagePopups() {
+    const now = this.time.now;
+    this.damagePopups = this.damagePopups.filter((popup) => now - popup.createdAt < 900);
+    this.damagePopups.forEach((popup) => {
+      const age = now - popup.createdAt;
+      const progress = age / 900;
+      const shake = popup.critical ? Math.sin(age / 24) * 8 : 0;
+      const text = popup.type === 'heal' ? `+${popup.amount}` : popup.critical ? `${popup.amount}!` : `${popup.amount}`;
+      const color = popup.critical ? palette.amber : popup.type === 'heal' ? palette.green : palette.red;
+      const damageText = this.add.text(
+        popup.x + shake,
+        popup.y - progress * 42,
+        text,
+        this.textStyle(popup.critical ? 28 : 22, color),
+      )
+        .setOrigin(0.5)
+        .setFontStyle('700')
+        .setAlpha(1 - progress);
+
+      damageText.setStroke('#180c08', popup.critical ? 6 : 4);
+    });
+  }
+
+  getPartyActorX(unit) {
+    return 704 + this.party.indexOf(unit) * 112;
+  }
+
+  getPartyActorY(unit) {
+    return 250 + this.party.indexOf(unit) * 72;
+  }
+
+  toggleDevTools() {
+    this.devToolsOpen = !this.devToolsOpen;
+    this.addLog(`Developer tools ${this.devToolsOpen ? 'shown' : 'hidden'}.`);
+    this.playSfx('menu');
+    if (this.mode === WORLD) this.renderWorld();
+    if (this.mode === BATTLE) this.renderBattle();
+  }
+
+  devStartBattle() {
+    if (!this.devToolsOpen || this.mode === BATTLE) return;
+    this.addLog('Dev: starting battle.');
+    this.startBattle();
+  }
+
+  devGrantTools() {
+    if (!this.devToolsOpen) return;
+    this.addItem('Brass Key');
+    this.addItem('Pressure Gauge');
+    this.addLog('Dev: key and gauge granted.');
+    if (this.mode === WORLD) this.renderWorld();
+  }
+
+  devSolveValve() {
+    if (!this.devToolsOpen) return;
+    this.valveInput = [...valveSequence];
+    this.valveSolved = true;
+    this.gateOpen = true;
+    this.addLog('Dev: valve solved and gate opened.');
+    this.playSfx('success');
+    if (this.mode === WORLD) this.renderWorld();
+  }
+
+  devGrantFuse() {
+    if (!this.devToolsOpen) return;
+    this.addItem('Aether Fuse');
+    this.addLog('Dev: fuse granted.');
+    if (this.mode === WORLD) this.renderWorld();
+  }
+
+  devForceCritical() {
+    if (!this.devToolsOpen) return;
+    this.forceNextCritical = true;
+    this.addLog('Dev: next damage hit will be critical.');
+    if (this.mode === WORLD) this.renderWorld();
+    if (this.mode === BATTLE) this.renderBattle();
+  }
+
+  devReset() {
+    if (!this.devToolsOpen) return;
+    this.scene.restart();
+  }
+
+  renderCurrentMode() {
+    if (this.mode === WORLD) this.renderWorld();
+    if (this.mode === BATTLE) this.renderBattle();
+  }
+
+  clearBattleStatuses() {
+    [...this.party, ...this.battleEnemies].forEach((unit) => clearBattleStatuses(unit));
   }
 
   drawPanel(x, y, width, height, title) {
@@ -615,6 +850,10 @@ class SteamRpgScene extends Phaser.Scene {
 
   textStyle(size, color) {
     return textStyle(size, color);
+  }
+
+  wrappedTextStyle(size, color, width) {
+    return wrappedTextStyle(size, color, width);
   }
 
   playSfx(type) {

@@ -1,3 +1,5 @@
+import { statusRules } from '../config/gameData.js';
+
 export function cloneBattlers(template) {
   return template.map((unit) => ({
     ...unit,
@@ -12,28 +14,55 @@ export function hasStatus(unit, name) {
 
 export function statusLabel(unit) {
   if (!unit.statuses.length) return 'Normal';
-  return unit.statuses.map((status) => `${status.name} ${status.turns}`).join(' / ');
+  return unit.statuses
+    .map((status) => {
+      const label = statusRules[status.name]?.label || status.name;
+      return status.turns ? `${label} ${status.turns}` : label;
+    })
+    .join(' / ');
 }
 
-export function damageMultiplier(unit) {
+export function outgoingDamageMultiplier(unit) {
   let multiplier = 1;
-  if (hasStatus(unit, 'jammed')) multiplier *= 0.55;
-  if (hasStatus(unit, 'burned')) multiplier *= 0.75;
   if (hasStatus(unit, 'overheated')) multiplier *= 1.25;
   return multiplier;
 }
 
-export function applyStatus(unit, name, turns) {
-  const existing = unit.statuses.find((status) => status.name === name);
-  if (existing) {
-    existing.turns = Math.max(existing.turns, turns);
-    return;
-  }
-  unit.statuses.push({ name, turns });
+export function incomingDamageMultiplier(unit) {
+  let multiplier = 1;
+  if (unit && hasStatus(unit, 'overheated')) multiplier *= 1.35;
+  return multiplier;
 }
 
-export function tickStatuses(unit) {
+export function rollAttackDamage(basePower, attacker, target, criticalChance = 0.15) {
+  const critical = Math.random() < criticalChance;
+  const criticalMultiplier = critical ? 1.5 : 1;
+  const damage = Math.round(
+    basePower * outgoingDamageMultiplier(attacker) * incomingDamageMultiplier(target) * criticalMultiplier,
+  );
+  return { damage, critical };
+}
+
+export function applyStatus(unit, name, turns = statusRules[name]?.defaultTurns) {
+  const existing = unit.statuses.find((status) => status.name === name);
+  const nextTurns = turns ?? null;
+  if (existing) {
+    existing.turns = existing.turns === null || nextTurns === null ? null : Math.max(existing.turns, nextTurns);
+    return;
+  }
+  unit.statuses.push({ name, turns: nextTurns });
+}
+
+export function tickStatuses(unit, durationType = 'action') {
   unit.statuses = unit.statuses
-    .map((status) => ({ ...status, turns: status.turns - 1 }))
-    .filter((status) => status.turns > 0);
+    .map((status) => {
+      const rule = statusRules[status.name];
+      if (!rule || rule.durationType !== durationType || status.turns === null) return status;
+      return { ...status, turns: status.turns - 1 };
+    })
+    .filter((status) => status.turns === null || status.turns > 0);
+}
+
+export function clearBattleStatuses(unit) {
+  unit.statuses = [];
 }
