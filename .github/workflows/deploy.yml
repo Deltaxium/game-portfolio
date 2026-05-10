@@ -9,6 +9,8 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  checks: write
+  pull-requests: write
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -72,6 +74,6 @@ jobs:
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: ${{ secrets.FIREBASE_PROJECT_ID }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GAME_PORTFOLIO_DELTAXIUM }}
+          projectId: game-portfolio-deltaxium
           channelId: live
