@@ -1,6 +1,10 @@
-# Game Portfolio
+# Cinderworks
 
-React, Phaser, and Firebase Hosting starter for a browser game portfolio.
+A steampunk-era turn-based RPG prototype built with React, Phaser, and Firebase Hosting.
+
+The current vertical slice includes top-down exploration, gated item progression, a valve puzzle,
+side-view Active Time Battle combat, and mechanical status effects that can reduce damage output or
+inhibit actions.
 
 ## Local Development
 
@@ -19,14 +23,16 @@ The production site is written to `dist/`.
 
 ## Firebase Hosting
 
-1. Create a Firebase project.
-2. Replace `your-firebase-project-id` in `.firebaserc` with your Firebase project ID.
-3. In GitHub, add repository secrets:
-   - `FIREBASE_PROJECT_ID`: your Firebase project ID
-   - `FIREBASE_SERVICE_ACCOUNT`: the JSON service account key with Firebase Hosting deploy access
-4. Push to `main`.
+The Firebase project is configured in `.firebaserc` as `game-portfolio-deltaxium`.
+Pushes to `main` deploy the production build to Firebase Hosting.
 
 ## GitHub Pages
 
 In the GitHub repository settings, set Pages to deploy from GitHub Actions. The workflow in
 `.github/workflows/deploy.yml` publishes `dist/` on every push to `main`.
+
+## License
+
+Source code is licensed under the MIT License. The game title, story, characters, setting, dialogue,
+art direction, visual assets, audio assets, logos, and other creative game content are All Rights
+Reserved unless explicitly stated otherwise. See `LICENSE`.
