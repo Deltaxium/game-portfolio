@@ -21,6 +21,10 @@ npm run build
 
 The production site is written to `dist/`.
 
+## Project Docs
+
+Agent and contributor docs start at `AGENTS.md` and `docs/INDEX.md`.
+
 ## Firebase Hosting
 
 The Firebase project is configured in `.firebaserc` as `game-portfolio-deltaxium`.

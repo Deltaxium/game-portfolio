@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
+    "check": "npm run lint && npm run build",
     "firebase:login": "NO_UPDATE_NOTIFIER=1 firebase login",
     "firebase:deploy": "NO_UPDATE_NOTIFIER=1 firebase deploy --only hosting"
   },

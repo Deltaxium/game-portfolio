@@ -1,99 +1,29 @@
 import Phaser from 'phaser';
-
-const WORLD = 'world';
-const BATTLE = 'battle';
-const TILE = 48;
-
-const palette = {
-  coal: 0x15110f,
-  panel: 0x2a1a13,
-  brass: 0xd68a25,
-  amber: 0xffc04d,
-  copper: 0xb94f2f,
-  red: 0x9f2d24,
-  cream: 0xf7d48b,
-  green: 0x7fb86d,
-  blue: 0x79a6b8,
-  smoke: 0x4a3b34,
-};
-
-const partyTemplate = [
-  {
-    name: 'Ada',
-    role: 'Gearblade',
-    maxHp: 120,
-    hp: 120,
-    speed: 42,
-    atb: 0,
-    statuses: [],
-    skills: [
-      { name: 'Strike', power: 22, target: 'enemy' },
-      { name: 'Overcrank', power: 34, target: 'enemy', selfStatus: 'overheated' },
-    ],
-  },
-  {
-    name: 'Brass',
-    role: 'Boiler Medic',
-    maxHp: 96,
-    hp: 96,
-    speed: 34,
-    atb: 0,
-    statuses: [],
-    skills: [
-      { name: 'Wrench', power: 18, target: 'enemy' },
-      { name: 'Steam Mend', power: -32, target: 'ally' },
-    ],
-  },
-];
-
-const enemyTemplate = [
-  {
-    name: 'Rust Hound',
-    maxHp: 88,
-    hp: 88,
-    speed: 32,
-    atb: 0,
-    statuses: [],
-    x: 210,
-    y: 260,
-    tint: palette.copper,
-  },
-  {
-    name: 'Valve Imp',
-    maxHp: 72,
-    hp: 72,
-    speed: 46,
-    atb: 0,
-    statuses: [],
-    x: 330,
-    y: 330,
-    tint: palette.red,
-  },
-];
-
-function cloneBattlers(template) {
-  return template.map((unit) => ({
-    ...unit,
-    skills: unit.skills ? unit.skills.map((skill) => ({ ...skill })) : undefined,
-    statuses: [],
-  }));
-}
-
-function statusLabel(unit) {
-  return unit.statuses.map((status) => status.name).join(', ') || 'Normal';
-}
-
-function hasStatus(unit, name) {
-  return unit.statuses.some((status) => status.name === name);
-}
-
-function damageMultiplier(unit) {
-  let multiplier = 1;
-  if (hasStatus(unit, 'jammed')) multiplier *= 0.55;
-  if (hasStatus(unit, 'overheated')) multiplier *= 1.25;
-  if (hasStatus(unit, 'burned')) multiplier *= 0.75;
-  return multiplier;
-}
+import {
+  BATTLE,
+  MAP_X,
+  MAP_Y,
+  SIDEBAR_X,
+  TILE,
+  WORLD,
+  enemyTemplate,
+  itemData,
+  palette,
+  partyTemplate,
+  statusRules,
+  valveSequence,
+  worldTiles,
+} from '../config/gameData.js';
+import {
+  applyStatus,
+  cloneBattlers,
+  damageMultiplier,
+  hasStatus,
+  statusLabel,
+  tickStatuses,
+} from '../systems/combat.js';
+import { playSfx } from '../systems/audio.js';
+import { drawBar, drawPanel, textStyle } from '../ui/drawing.js';
 
 class SteamRpgScene extends Phaser.Scene {
   constructor() {
@@ -103,12 +33,22 @@ class SteamRpgScene extends Phaser.Scene {
   create() {
     this.mode = WORLD;
     this.inventory = new Set();
-    this.message = 'Find the brass key, solve the valve puzzle, then open the factory gate.';
+    this.messageLog = [
+      'Find the key, read the gauge, set the valve order, and power the lift.',
+      'Press I for inventory. Space or Enter interacts.',
+    ];
     this.party = cloneBattlers(partyTemplate);
     this.battleEnemies = [];
     this.selectedCommand = 0;
     this.activeUnitIndex = null;
     this.inMenu = false;
+    this.inventoryOpen = false;
+    this.valveInput = [];
+    this.valveSolved = false;
+    this.gateOpen = false;
+    this.enemyCleared = false;
+    this.gameComplete = false;
+    this.lastBattleRender = 0;
 
     this.createTextures();
     this.createWorld();
@@ -117,140 +57,201 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   createTextures() {
-    const gear = this.add.graphics();
-    gear.fillStyle(palette.brass, 1);
-    for (let i = 0; i < 12; i += 1) {
-      const angle = (Math.PI * 2 * i) / 12;
-      gear.fillRect(21 + Math.cos(angle) * 18, 21 + Math.sin(angle) * 18, 10, 10);
-    }
-    gear.fillCircle(26, 26, 20);
-    gear.fillStyle(palette.coal, 1);
-    gear.fillCircle(26, 26, 8);
-    gear.generateTexture('gear', 52, 52);
-    gear.destroy();
+    this.makeGearTexture('gear', palette.brass);
+    this.makeGearTexture('red-gear', palette.red);
+    this.makeGearTexture('blue-gear', palette.blue);
 
     const hero = this.add.graphics();
     hero.fillStyle(palette.blue, 1);
-    hero.fillRoundedRect(8, 4, 28, 36, 6);
+    hero.fillRoundedRect(8, 7, 30, 31, 6);
     hero.fillStyle(palette.brass, 1);
-    hero.fillCircle(22, 8, 7);
-    hero.generateTexture('hero', 44, 44);
+    hero.fillCircle(23, 9, 7);
+    hero.fillStyle(palette.coal, 1);
+    hero.fillRect(18, 22, 11, 16);
+    hero.generateTexture('hero', 46, 46);
     hero.destroy();
 
     const enemy = this.add.graphics();
     enemy.fillStyle(palette.copper, 1);
-    enemy.fillTriangle(6, 38, 42, 38, 24, 6);
+    enemy.fillTriangle(5, 40, 43, 40, 24, 5);
     enemy.fillStyle(palette.amber, 1);
     enemy.fillCircle(24, 24, 6);
     enemy.generateTexture('enemy', 48, 48);
     enemy.destroy();
   }
 
+  makeGearTexture(key, color) {
+    const gear = this.add.graphics();
+    gear.fillStyle(color, 1);
+    for (let i = 0; i < 12; i += 1) {
+      const angle = (Math.PI * 2 * i) / 12;
+      gear.fillRect(23 + Math.cos(angle) * 18, 23 + Math.sin(angle) * 18, 8, 8);
+    }
+    gear.fillCircle(27, 27, 19);
+    gear.fillStyle(palette.coal, 1);
+    gear.fillCircle(27, 27, 8);
+    gear.generateTexture(key, 54, 54);
+    gear.destroy();
+  }
+
   createInput() {
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys('W,A,S,D,SPACE,ENTER,ESC,UP,DOWN');
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,I,SPACE,ENTER,ESC,UP,DOWN');
 
     this.input.keyboard.on('keydown-SPACE', () => this.handleConfirm());
     this.input.keyboard.on('keydown-ENTER', () => this.handleConfirm());
+    this.input.keyboard.on('keydown-I', () => this.toggleInventory());
+    this.input.keyboard.on('keydown-UP', () => this.moveMenu(-1));
+    this.input.keyboard.on('keydown-DOWN', () => this.moveMenu(1));
     this.input.keyboard.on('keydown-ESC', () => {
+      if (this.inventoryOpen) {
+        this.inventoryOpen = false;
+        this.renderWorld();
+        return;
+      }
+
       if (this.mode === BATTLE && this.inMenu) {
         this.inMenu = false;
         this.activeUnitIndex = null;
-        this.message = 'Command cancelled. Time keeps moving.';
+        this.addLog('Command wheel released. ATB continues.');
         this.renderBattle();
       }
     });
-    this.input.keyboard.on('keydown-UP', () => this.moveMenu(-1));
-    this.input.keyboard.on('keydown-DOWN', () => this.moveMenu(1));
   }
 
   createWorld() {
-    this.worldTiles = [
-      '####################',
-      '#....K.......#.....#',
-      '#............#..E..#',
-      '#..####..#####.....#',
-      '#..#..#............#',
-      '#..#V.#....####G####',
-      '#..#..#....#.......#',
-      '#..####....#.......#',
-      '#..........#...F...#',
-      '#....P.............#',
-      '####################',
-    ];
+    this.worldTiles = [...worldTiles];
     this.player = { x: 5, y: 9 };
-    this.valveSolved = false;
-    this.gateOpen = false;
   }
 
-  renderWorld() {
-    this.clearScene();
-    const { width, height } = this.scale;
-    this.add.rectangle(width / 2, height / 2, width, height, 0x241811);
-
-    const offsetX = 28;
-    const offsetY = 14;
-    for (let y = 0; y < this.worldTiles.length; y += 1) {
-      for (let x = 0; x < this.worldTiles[y].length; x += 1) {
-        this.drawTile(x, y, offsetX, offsetY);
-      }
-    }
-
-    this.add.image(offsetX + this.player.x * TILE + 24, offsetY + this.player.y * TILE + 24, 'hero');
-    this.drawWorldHud();
-  }
-
-  drawTile(x, y, offsetX, offsetY) {
-    const tile = this.worldTiles[y][x];
-    const px = offsetX + x * TILE;
-    const py = offsetY + y * TILE;
-    const base = tile === '#' ? palette.smoke : 0x3a2619;
-    this.add.rectangle(px + 24, py + 24, 46, 46, base).setStrokeStyle(1, 0x5a3922);
-
-    if (tile === 'K' && !this.inventory.has('Brass Key')) {
-      this.add.image(px + 24, py + 24, 'gear').setScale(0.48).setTint(palette.amber);
-    }
-    if (tile === 'V' && !this.valveSolved) {
-      this.add.image(px + 24, py + 24, 'gear').setScale(0.58).setTint(palette.copper);
-    }
-    if (tile === 'G' && !this.gateOpen) {
-      this.add.rectangle(px + 24, py + 24, 38, 44, palette.red).setStrokeStyle(2, palette.amber);
-    }
-    if (tile === 'E') {
-      this.add.image(px + 24, py + 24, 'enemy').setScale(0.72).setTint(palette.copper);
-    }
-    if (tile === 'F') {
-      this.add.rectangle(px + 24, py + 24, 36, 36, palette.green).setStrokeStyle(2, palette.amber);
-    }
-    if (tile === 'P') {
-      this.add.text(px + 12, py + 12, '?', this.textStyle(24, palette.amber)).setFontStyle('700');
-    }
-  }
-
-  drawWorldHud() {
-    this.drawPanel(24, 438, 912, 78);
-    this.add.image(52, 476, 'gear').setScale(0.5).setAlpha(0.8);
-    this.add.text(84, 454, this.message, this.textStyle(17, palette.cream));
-    this.add.text(
-      84,
-      484,
-      `Inventory: ${Array.from(this.inventory).join(', ') || 'empty'}   Move: arrows/WASD   Interact: Space`,
-      this.textStyle(14, 0xf1a73d),
-    );
-  }
-
-  update(_time, delta) {
+  update(time, delta) {
     if (this.mode === WORLD) {
       this.updateWorldMovement();
       return;
     }
 
-    this.updateBattle(delta);
+    this.updateBattle(time, delta);
+  }
+
+  renderWorld() {
+    this.clearScene();
+    this.add.rectangle(480, 270, 960, 540, 0x21140f);
+    this.drawWorldFrame();
+    this.drawMap();
+    this.drawSidebar();
+    this.drawMessagePanel();
+    if (this.inventoryOpen) this.drawInventoryOverlay();
+  }
+
+  drawWorldFrame() {
+    this.drawPanel(14, 14, 694, 392, 'Factory District');
+    this.add.rectangle(365, 416, 690, 6, palette.brass).setAlpha(0.85);
+    this.drawPanel(SIDEBAR_X, 14, 214, 392, 'Satchel');
+    this.drawPanel(14, 424, 924, 96, 'Console');
+  }
+
+  drawMap() {
+    for (let y = 0; y < this.worldTiles.length; y += 1) {
+      for (let x = 0; x < this.worldTiles[y].length; x += 1) {
+        this.drawTile(x, y);
+      }
+    }
+
+    this.add.image(MAP_X + this.player.x * TILE + TILE / 2, MAP_Y + this.player.y * TILE + TILE / 2, 'hero');
+  }
+
+  drawTile(x, y) {
+    const tile = this.worldTiles[y][x];
+    const px = MAP_X + x * TILE;
+    const py = MAP_Y + y * TILE;
+    const isWall = tile === '#';
+    const fill = isWall ? palette.smoke : (x + y) % 2 === 0 ? 0x382419 : 0x312017;
+    this.add.rectangle(px + TILE / 2, py + TILE / 2, TILE - 2, TILE - 2, fill).setStrokeStyle(1, 0x5f3d24);
+
+    if (tile === 'K' && !this.inventory.has('Brass Key')) {
+      this.add.image(px + 17, py + 17, 'gear').setScale(0.34).setTint(palette.amber);
+    }
+    if (tile === 'S' && !this.inventory.has('Pressure Gauge')) {
+      this.add.circle(px + 17, py + 17, 10, palette.cream).setStrokeStyle(3, palette.brass);
+      this.add.line(px + 17, py + 17, 0, 0, 8, -6, palette.red).setLineWidth(2);
+    }
+    if (tile === 'V') {
+      this.add.image(px + 17, py + 17, this.valveSolved ? 'gear' : 'red-gear').setScale(0.38);
+    }
+    if (tile === 'G' && !this.gateOpen) {
+      this.add.rectangle(px + 17, py + 17, 26, 31, palette.red).setStrokeStyle(2, palette.amber);
+    }
+    if (tile === 'E' && !this.enemyCleared) {
+      this.add.image(px + 17, py + 17, 'enemy').setScale(0.55).setTint(palette.copper);
+    }
+    if (tile === 'F') {
+      this.add.rectangle(px + 17, py + 17, 24, 24, this.inventory.has('Aether Fuse') ? palette.green : palette.gray)
+        .setStrokeStyle(2, palette.amber);
+    }
+    if (tile === 'P') {
+      this.add.text(px + 9, py + 4, '?', this.textStyle(22, palette.amber)).setFontStyle('700');
+    }
+  }
+
+  drawSidebar() {
+    this.add.text(SIDEBAR_X + 18, 52, 'Inventory', this.textStyle(18, palette.amber)).setFontStyle('700');
+    const items = Object.keys(itemData);
+    items.forEach((item, index) => {
+      const y = 84 + index * 54;
+      const owned = this.inventory.has(item);
+      this.add.rectangle(SIDEBAR_X + 106, y + 17, 176, 42, owned ? 0x392417 : 0x211713)
+        .setStrokeStyle(1, owned ? palette.brass : palette.gray);
+      this.add.text(SIDEBAR_X + 28, y + 4, item, this.textStyle(13, owned ? palette.cream : palette.gray)).setFontStyle('700');
+      this.add.text(SIDEBAR_X + 28, y + 22, owned ? 'Acquired' : 'Missing', this.textStyle(12, owned ? palette.green : palette.copper));
+    });
+
+    this.add.text(SIDEBAR_X + 18, 258, 'Objectives', this.textStyle(18, palette.amber)).setFontStyle('700');
+    const objectives = [
+      ['Key', this.inventory.has('Brass Key')],
+      ['Gauge', this.inventory.has('Pressure Gauge')],
+      ['Valve', this.valveSolved],
+      ['Fuse', this.inventory.has('Aether Fuse')],
+      ['Lift', this.gameComplete],
+    ];
+    objectives.forEach(([label, done], index) => {
+      this.add.text(
+        SIDEBAR_X + 28,
+        290 + index * 20,
+        `${done ? '[x]' : '[ ]'} ${label}`,
+        this.textStyle(13, done ? palette.green : palette.cream),
+      );
+    });
+  }
+
+  drawMessagePanel() {
+    this.add.image(44, 466, 'gear').setScale(0.45).setAlpha(0.8);
+    this.add.text(78, 444, this.messageLog.at(-2) || '', this.textStyle(15, palette.cream));
+    this.add.text(78, 472, this.messageLog.at(-1) || '', this.textStyle(15, palette.amber));
+    this.add.text(734, 488, 'Move WASD/Arrows  Interact Space  Inventory I', this.textStyle(13, palette.cream));
+  }
+
+  drawInventoryOverlay() {
+    this.add.rectangle(480, 270, 960, 540, 0x000000, 0.45);
+    this.drawPanel(206, 76, 548, 382, 'Inventory and Status');
+    this.add.text(238, 122, 'Satchel', this.textStyle(22, palette.amber)).setFontStyle('700');
+
+    Object.entries(itemData).forEach(([item, description], index) => {
+      const y = 162 + index * 66;
+      const owned = this.inventory.has(item);
+      this.add.rectangle(478, y + 18, 470, 50, owned ? 0x3a2519 : 0x211713).setStrokeStyle(1, owned ? palette.brass : palette.gray);
+      this.add.text(258, y, `${owned ? '[x]' : '[ ]'} ${item}`, this.textStyle(16, owned ? palette.cream : palette.gray)).setFontStyle('700');
+      this.add.text(258, y + 24, description, this.textStyle(13, owned ? palette.amber : palette.gray));
+    });
+
+    this.add.text(238, 374, 'Party Status', this.textStyle(18, palette.amber)).setFontStyle('700');
+    this.party.forEach((unit, index) => {
+      this.add.text(258 + index * 228, 406, `${unit.name} HP ${unit.hp}/${unit.maxHp}`, this.textStyle(14, palette.cream));
+      this.add.text(258 + index * 228, 428, statusLabel(unit), this.textStyle(12, palette.amber));
+    });
   }
 
   updateWorldMovement() {
-    if (this.worldMoveLocked) return;
-
+    if (this.inventoryOpen || this.worldMoveLocked) return;
     const direction = this.readDirection();
     if (!direction) return;
 
@@ -258,12 +259,13 @@ class SteamRpgScene extends Phaser.Scene {
     if (!this.canWalk(next.x, next.y)) return;
 
     this.player = next;
+    this.playSfx('step');
     this.worldMoveLocked = true;
-    this.time.delayedCall(140, () => {
+    this.time.delayedCall(135, () => {
       this.worldMoveLocked = false;
     });
     this.handleTileStep();
-    this.renderWorld();
+    if (this.mode === WORLD) this.renderWorld();
   }
 
   readDirection() {
@@ -276,36 +278,54 @@ class SteamRpgScene extends Phaser.Scene {
 
   canWalk(x, y) {
     const tile = this.worldTiles[y]?.[x];
-    if (!tile || tile === '#') return false;
+    if (!tile || tile === '#') {
+      this.playSfx('error');
+      return false;
+    }
+
     if (tile === 'G' && !this.gateOpen) {
-      this.message = this.inventory.has('Brass Key')
-        ? 'The gate lock needs pressure. Solve the valve puzzle first.'
-        : 'The factory gate is locked. A brass key should fit it.';
+      this.addLog(this.inventory.has('Brass Key') ? 'The gate needs valve pressure before it will open.' : 'The factory gate is locked by a brass keyway.');
+      this.playSfx('error');
       this.renderWorld();
       return false;
     }
+
     return true;
   }
 
   handleTileStep() {
     const tile = this.worldTiles[this.player.y][this.player.x];
     if (tile === 'K' && !this.inventory.has('Brass Key')) {
-      this.inventory.add('Brass Key');
-      this.message = 'Collected Brass Key. It smells like oil and hot metal.';
+      this.addItem('Brass Key');
+      this.addLog('Collected Brass Key.');
     }
-    if (tile === 'E') {
+    if (tile === 'S' && !this.inventory.has('Pressure Gauge')) {
+      this.addItem('Pressure Gauge');
+      this.addLog('Pressure Gauge acquired. Valve order: red, amber, blue.');
+    }
+    if (tile === 'E' && !this.enemyCleared) {
       this.startBattle();
     }
     if (tile === 'F') {
-      this.message = 'Factory lift reached. Prototype objective complete.';
+      if (this.inventory.has('Aether Fuse')) {
+        this.gameComplete = true;
+        this.addLog('Factory lift powered. Route complete.');
+        this.playSfx('success');
+      } else {
+        this.addLog('The lift socket is empty. Aether Fuse required.');
+      }
     }
     if (tile === 'P') {
-      this.message = 'Puzzle clue: key first, valve second, gate last.';
+      this.addLog('Blueprint note: recover key, read gauge, tune valve, win fuse.');
     }
   }
 
   handleConfirm() {
     if (this.mode === WORLD) {
+      if (this.inventoryOpen) {
+        this.toggleInventory();
+        return;
+      }
       this.interactWorld();
       return;
     }
@@ -315,18 +335,51 @@ class SteamRpgScene extends Phaser.Scene {
     }
   }
 
+  toggleInventory() {
+    if (this.mode !== WORLD) return;
+    this.inventoryOpen = !this.inventoryOpen;
+    this.playSfx('menu');
+    this.renderWorld();
+  }
+
   interactWorld() {
     const tile = this.worldTiles[this.player.y][this.player.x];
-    if (tile === 'V') {
-      if (!this.inventory.has('Brass Key')) {
-        this.message = 'The valve wheel is chained. Find the brass key first.';
-      } else {
-        this.valveSolved = true;
-        this.gateOpen = true;
-        this.message = 'Valve pressure equalized. The eastern gate unlocks.';
-      }
+    if (tile !== 'V') {
+      this.addLog('Nothing mechanical responds here.');
+      this.playSfx('error');
       this.renderWorld();
+      return;
     }
+
+    if (!this.inventory.has('Brass Key')) {
+      this.addLog('The valve wheel is chained. Find the Brass Key.');
+      this.playSfx('error');
+      this.renderWorld();
+      return;
+    }
+
+    if (!this.inventory.has('Pressure Gauge')) {
+      this.addLog('The pressure dials are unreadable without a gauge.');
+      this.playSfx('error');
+      this.renderWorld();
+      return;
+    }
+
+    const nextColor = valveSequence[this.valveInput.length];
+    this.valveInput.push(nextColor);
+    this.playSfx('valve');
+
+    if (this.valveInput.length < valveSequence.length) {
+      this.addLog(`Valve set to ${nextColor}. Continue the sequence.`);
+      this.renderWorld();
+      return;
+    }
+
+    this.valveSolved = true;
+    this.gateOpen = true;
+    this.addLog('Valve sequence complete. Eastern gate unlocked.');
+    this.playSfx('success');
+    this.renderWorld();
   }
 
   startBattle() {
@@ -334,16 +387,16 @@ class SteamRpgScene extends Phaser.Scene {
     this.inMenu = false;
     this.activeUnitIndex = null;
     this.battleEnemies = cloneBattlers(enemyTemplate);
-    this.message = 'Ambushed by coal-smoke machines. ATB gauges fill while menus are open.';
+    this.addLog('Ambushed by coal-smoke machines. ATB continues while menus are open.');
+    this.playSfx('battle');
     this.renderBattle();
   }
 
   renderBattle() {
     this.clearScene();
-    const { width, height } = this.scale;
-    this.add.rectangle(width / 2, height / 2, width, height, 0x21130f);
-    this.add.rectangle(width / 2, 314, width, 180, 0x332117);
-    this.add.rectangle(width / 2, 360, width, 5, palette.brass);
+    this.add.rectangle(480, 270, 960, 540, 0x1d100c);
+    this.add.rectangle(480, 298, 930, 190, 0x352116).setStrokeStyle(2, palette.brass);
+    this.add.rectangle(480, 366, 930, 8, palette.copper);
 
     this.drawBattleActors();
     this.drawBattleHud();
@@ -352,52 +405,75 @@ class SteamRpgScene extends Phaser.Scene {
   drawBattleActors() {
     this.battleEnemies.forEach((enemy) => {
       if (enemy.hp <= 0) return;
-      this.add.image(enemy.x, enemy.y, 'enemy').setScale(1.65).setTint(enemy.tint);
-      this.add.text(enemy.x - 58, enemy.y + 58, enemy.name, this.textStyle(14, palette.cream));
+      this.add.image(enemy.x, enemy.y, 'enemy').setScale(1.72).setTint(enemy.tint);
+      this.add.text(enemy.x - 58, enemy.y + 58, enemy.name, this.textStyle(14, palette.cream)).setFontStyle('700');
       this.drawBar(enemy.x - 55, enemy.y + 82, 110, 10, enemy.hp / enemy.maxHp, palette.red);
+      this.drawBar(enemy.x - 55, enemy.y + 96, 110, 8, enemy.atb / 100, palette.amber);
+      this.add.text(enemy.x - 55, enemy.y + 108, statusLabel(enemy), this.textStyle(11, palette.amber));
     });
 
     this.party.forEach((hero, index) => {
-      const x = 720 + index * 96;
-      const y = 265 + index * 70;
-      this.add.image(x, y, 'hero').setScale(1.55).setTint(index === 0 ? palette.blue : palette.green);
-      this.add.text(x - 48, y + 56, hero.name, this.textStyle(14, palette.cream));
-      this.drawBar(x - 54, y + 80, 108, 10, hero.hp / hero.maxHp, palette.green);
+      if (hero.hp <= 0) return;
+      const x = 704 + index * 112;
+      const y = 250 + index * 72;
+      this.add.image(x, y, 'hero').setScale(1.65).setTint(index === 0 ? palette.blue : palette.green);
+      this.add.text(x - 50, y + 59, hero.name, this.textStyle(14, palette.cream)).setFontStyle('700');
+      this.drawBar(x - 54, y + 82, 108, 10, hero.hp / hero.maxHp, palette.green);
+      this.drawBar(x - 54, y + 96, 108, 8, hero.atb / 100, palette.amber);
     });
   }
 
   drawBattleHud() {
-    this.drawPanel(20, 390, 920, 130);
-    this.add.image(50, 420, 'gear').setScale(0.42).setAlpha(0.75);
-    this.add.text(78, 404, this.message, this.textStyle(15, palette.cream));
+    this.drawPanel(18, 386, 924, 136, 'Command Deck');
+    this.add.text(42, 422, this.messageLog.at(-1) || '', this.textStyle(15, palette.cream));
 
     this.party.forEach((unit, index) => {
-      const x = 38 + index * 240;
-      const y = 442;
-      this.add.text(x, y, `${unit.name}  HP ${unit.hp}/${unit.maxHp}`, this.textStyle(14, palette.cream));
-      this.drawBar(x, y + 25, 170, 10, unit.atb / 100, palette.amber);
-      this.add.text(x, y + 42, statusLabel(unit), this.textStyle(12, 0xf2a24b));
+      const x = 42 + index * 240;
+      const y = 456;
+      this.add.text(x, y, `${unit.name}  ${unit.role}`, this.textStyle(13, palette.amber)).setFontStyle('700');
+      this.add.text(x, y + 22, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(13, palette.cream));
+      this.drawBar(x + 82, y + 27, 132, 10, unit.atb / 100, palette.amber);
+      this.add.text(x, y + 45, statusLabel(unit), this.textStyle(12, palette.cream));
     });
 
+    this.drawStatusLegend();
+
     if (this.inMenu && this.activeUnitIndex !== null) {
-      const unit = this.party[this.activeUnitIndex];
-      this.drawPanel(616, 404, 300, 100);
-      unit.skills.forEach((skill, index) => {
-        const marker = index === this.selectedCommand ? '>' : ' ';
-        this.add.text(640, 424 + index * 30, `${marker} ${skill.name}`, this.textStyle(17, palette.amber));
-      });
+      this.drawCommandMenu();
     }
   }
 
-  updateBattle(delta) {
+  drawCommandMenu() {
+    const unit = this.party[this.activeUnitIndex];
+    this.drawPanel(610, 404, 306, 102, `${unit.name} Orders`);
+    unit.skills.forEach((skill, index) => {
+      const y = 430 + index * 24;
+      const selected = index === this.selectedCommand;
+      this.add.rectangle(760, y + 9, 266, 22, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
+      this.add.text(636, y, `${selected ? '>' : ' '} ${skill.name}`, this.textStyle(15, selected ? palette.amber : palette.cream));
+    });
+    this.add.text(636, 498, unit.skills[this.selectedCommand].description, this.textStyle(11, palette.cream));
+  }
+
+  drawStatusLegend() {
+    this.add.text(516, 454, 'Status', this.textStyle(13, palette.amber)).setFontStyle('700');
+    Object.entries(statusRules).forEach(([name, rule], index) => {
+      this.add.text(516, 474 + index * 12, `${name}: ${rule}`, this.textStyle(10, palette.cream));
+    });
+  }
+
+  updateBattle(time, delta) {
     if (this.party.every((unit) => unit.hp <= 0)) {
-      this.message = 'The boilers go cold. Press refresh to retry.';
+      this.addLog('The boilers go cold. Refresh to retry.');
       this.renderBattle();
       return;
     }
 
     if (this.battleEnemies.every((unit) => unit.hp <= 0)) {
-      this.message = 'Victory. The route ahead clears.';
+      this.enemyCleared = true;
+      this.addItem('Aether Fuse');
+      this.addLog('Victory. Aether Fuse recovered from the wreckage.');
+      this.playSfx('success');
       this.mode = WORLD;
       this.replaceWorldTile('E', '.');
       this.renderWorld();
@@ -414,7 +490,8 @@ class SteamRpgScene extends Phaser.Scene {
       this.inMenu = true;
       this.activeUnitIndex = readyHero;
       this.selectedCommand = 0;
-      this.message = `${this.party[readyHero].name} is ready. Choose a command.`;
+      this.addLog(`${this.party[readyHero].name} is ready. Choose a command.`);
+      this.playSfx('ready');
       this.renderBattle();
       return;
     }
@@ -423,6 +500,12 @@ class SteamRpgScene extends Phaser.Scene {
     if (enemy && !this.enemyActing) {
       this.enemyActing = true;
       this.enemyAction(enemy);
+      return;
+    }
+
+    if (time - this.lastBattleRender > 180) {
+      this.lastBattleRender = time;
+      this.renderBattle();
     }
   }
 
@@ -430,6 +513,7 @@ class SteamRpgScene extends Phaser.Scene {
     if (!this.inMenu || this.activeUnitIndex === null) return;
     const skills = this.party[this.activeUnitIndex].skills;
     this.selectedCommand = Phaser.Math.Wrap(this.selectedCommand + direction, 0, skills.length);
+    this.playSfx('menu');
     this.renderBattle();
   }
 
@@ -438,29 +522,37 @@ class SteamRpgScene extends Phaser.Scene {
     const skill = actor.skills[this.selectedCommand];
 
     if (hasStatus(actor, 'stunned')) {
-      this.message = `${actor.name} is stunned and loses the action.`;
+      this.addLog(`${actor.name} is stunned and loses the action.`);
+      this.playSfx('error');
       this.consumeTurn(actor);
       return;
     }
 
     if (hasStatus(actor, 'jammed') && Math.random() < 0.35) {
-      this.message = `${actor.name}'s gear train jams. Command fails.`;
+      this.addLog(`${actor.name}'s gear train jams. Command fails.`);
+      this.playSfx('error');
       this.consumeTurn(actor);
       return;
+    }
+
+    if (hasStatus(actor, 'burned')) {
+      actor.hp = Math.max(1, actor.hp - 6);
     }
 
     if (skill.target === 'ally') {
       const target = this.party.reduce((lowest, unit) => (unit.hp < lowest.hp ? unit : lowest), this.party[0]);
       target.hp = Math.min(target.maxHp, target.hp - skill.power);
-      this.message = `${actor.name} restores ${target.name}'s pressure.`;
+      if (skill.cleanse) target.statuses = [];
+      this.addLog(`${actor.name} uses ${skill.name} on ${target.name}.`);
+      this.playSfx('heal');
     } else {
       const target = this.battleEnemies.find((unit) => unit.hp > 0);
       const damage = Math.round(skill.power * damageMultiplier(actor));
       target.hp = Math.max(0, target.hp - damage);
-      this.message = `${actor.name} uses ${skill.name} for ${damage} damage.`;
-      if (skill.selfStatus) {
-        this.applyStatus(actor, skill.selfStatus, 2);
-      }
+      if (skill.status && Math.random() < 0.75) this.applyStatus(target, skill.status, 2);
+      if (skill.selfStatus) this.applyStatus(actor, skill.selfStatus, 2);
+      this.addLog(`${actor.name} uses ${skill.name} for ${damage} damage.`);
+      this.playSfx('hit');
     }
 
     this.consumeTurn(actor);
@@ -468,18 +560,17 @@ class SteamRpgScene extends Phaser.Scene {
 
   enemyAction(enemy) {
     const target = Phaser.Utils.Array.GetRandom(this.party.filter((unit) => unit.hp > 0));
-    const appliesJam = enemy.name === 'Valve Imp' && Math.random() < 0.55;
-    const appliesBurn = enemy.name === 'Rust Hound' && Math.random() < 0.4;
-    const damage = Math.round(16 * damageMultiplier(enemy));
-
+    const damage = Math.round(17 * damageMultiplier(enemy));
     target.hp = Math.max(0, target.hp - damage);
+
+    if (enemy.name === 'Valve Imp' && Math.random() < 0.5) this.applyStatus(target, 'jammed', 3);
+    if (enemy.name === 'Rust Hound' && Math.random() < 0.35) this.applyStatus(target, 'burned', 3);
+    if (Math.random() < 0.12) this.applyStatus(target, 'stunned', 1);
+
     enemy.atb = 0;
     this.tickStatuses(enemy);
-
-    if (appliesJam) this.applyStatus(target, 'jammed', 3);
-    if (appliesBurn) this.applyStatus(target, 'burned', 3);
-
-    this.message = `${enemy.name} strikes ${target.name} for ${damage}.`;
+    this.addLog(`${enemy.name} hits ${target.name} for ${damage}.`);
+    this.playSfx('enemy');
     this.enemyActing = false;
     this.renderBattle();
   }
@@ -489,46 +580,45 @@ class SteamRpgScene extends Phaser.Scene {
     this.tickStatuses(unit);
     this.inMenu = false;
     this.activeUnitIndex = null;
-    this.time.delayedCall(180, () => this.renderBattle());
+    this.time.delayedCall(160, () => this.renderBattle());
+  }
+
+  addItem(item) {
+    this.inventory.add(item);
+    this.playSfx('item');
   }
 
   applyStatus(unit, name, turns) {
-    const existing = unit.statuses.find((status) => status.name === name);
-    if (existing) {
-      existing.turns = Math.max(existing.turns, turns);
-    } else {
-      unit.statuses.push({ name, turns });
-    }
+    applyStatus(unit, name, turns);
   }
 
   tickStatuses(unit) {
-    unit.statuses = unit.statuses
-      .map((status) => ({ ...status, turns: status.turns - 1 }))
-      .filter((status) => status.turns > 0);
+    tickStatuses(unit);
   }
 
   replaceWorldTile(target, replacement) {
     this.worldTiles = this.worldTiles.map((row) => row.replace(target, replacement));
   }
 
-  drawPanel(x, y, width, height) {
-    this.add.rectangle(x + width / 2, y + height / 2, width, height, palette.panel)
-      .setStrokeStyle(3, palette.brass);
-    this.add.rectangle(x + width / 2, y + 8, width - 14, 3, palette.copper);
+  addLog(message) {
+    this.messageLog.push(message);
+    this.messageLog = this.messageLog.slice(-6);
+  }
+
+  drawPanel(x, y, width, height, title) {
+    drawPanel(this, x, y, width, height, title);
   }
 
   drawBar(x, y, width, height, ratio, color) {
-    this.add.rectangle(x + width / 2, y + height / 2, width, height, 0x160d09).setStrokeStyle(1, palette.brass);
-    this.add.rectangle(x + (width * Phaser.Math.Clamp(ratio, 0, 1)) / 2, y + height / 2, width * Phaser.Math.Clamp(ratio, 0, 1), height, color);
+    drawBar(this, x, y, width, height, ratio, color);
   }
 
   textStyle(size, color) {
-    return {
-      color: Phaser.Display.Color.IntegerToColor(color).rgba,
-      fontFamily: 'Georgia, "Times New Roman", serif',
-      fontSize: `${size}px`,
-      letterSpacing: 0,
-    };
+    return textStyle(size, color);
+  }
+
+  playSfx(type) {
+    playSfx(this, type);
   }
 
   clearScene() {
