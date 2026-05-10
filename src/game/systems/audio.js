@@ -13,6 +13,7 @@ const sfx = {
 };
 
 export function playSfx(scene, type) {
+  if (scene.settingsState?.muted) return;
   const audioContext = scene.sound?.context;
   const settings = sfx[type];
   if (!audioContext || !settings) return;
@@ -26,6 +27,10 @@ export function playSfx(scene, type) {
   gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + duration);
   oscillator.connect(gain);
   gain.connect(audioContext.destination);
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    gain.disconnect();
+  };
   oscillator.start();
   oscillator.stop(audioContext.currentTime + duration);
 }

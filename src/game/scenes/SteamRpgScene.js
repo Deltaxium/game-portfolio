@@ -3,9 +3,12 @@ import {
   BATTLE,
   MAP_X,
   MAP_Y,
+  PAUSED,
   SIDEBAR_X,
   TILE,
+  TITLE,
   WORLD,
+  equipmentData,
   itemData,
   palette,
   bossResistancePlan,
@@ -38,8 +41,21 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   create() {
-    this.mode = WORLD;
+    this.mode = TITLE;
+    this.previousMode = WORLD;
     this.inventory = new Set();
+    this.consumables = {
+      'Steam Tonic': 2,
+      'Coolant Ampoule': 1,
+    };
+    this.equipment = {
+      ada: 'Riveted Saber',
+      brass: 'Medic Boiler',
+    };
+    this.settingsState = {
+      muted: false,
+      reducedMotion: false,
+    };
     this.messageLog = [
       'Find the key, read the gauge, set the valve order, and power the lift.',
       'Press I for inventory. Space or Enter interacts.',
@@ -47,6 +63,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.party = cloneBattlers(partyTemplate);
     this.battleEnemies = [];
     this.selectedCommand = 0;
+    this.selectedTargetIndex = 0;
     this.activeUnitIndex = null;
     this.inMenu = false;
     this.inventoryOpen = false;
@@ -58,17 +75,22 @@ class SteamRpgScene extends Phaser.Scene {
     this.enemyCleared = false;
     this.gameComplete = false;
     this.lastBattleRender = 0;
+    this.battleResolved = false;
+    this.enemyActing = false;
     this.damagePopups = [];
+    this.hitEffects = [];
     this.devToolsOpen = false;
     this.forceNextCritical = false;
 
     this.createTextures();
     this.createWorld();
     this.createInput();
-    this.renderWorld();
+    this.renderTitle();
   }
 
   createTextures() {
+    if (this.textures.exists('gear')) return;
+
     this.makeGearTexture('gear', palette.brass);
     this.makeGearTexture('red-gear', palette.red);
     this.makeGearTexture('blue-gear', palette.blue);
@@ -108,22 +130,37 @@ class SteamRpgScene extends Phaser.Scene {
 
   createInput() {
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys('W,A,S,D,I,B,K,V,L,C,R,H,SPACE,ENTER,ESC,UP,DOWN');
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,I,B,K,V,L,C,R,H,P,M,N,O,SPACE,ENTER,ESC,UP,DOWN,LEFT,RIGHT');
+    this.keyboardHandlers = [];
 
-    this.input.keyboard.on('keydown-SPACE', () => this.handleConfirm());
-    this.input.keyboard.on('keydown-ENTER', () => this.handleConfirm());
-    this.input.keyboard.on('keydown-I', () => this.toggleInventory());
-    this.input.keyboard.on('keydown-H', () => this.toggleStatusMenu());
-    this.input.keyboard.on('keydown-UP', () => this.moveMenu(-1));
-    this.input.keyboard.on('keydown-DOWN', () => this.moveMenu(1));
-    this.input.keyboard.on('keydown-BACKTICK', () => this.toggleDevTools());
-    this.input.keyboard.on('keydown-B', () => this.devStartBattle());
-    this.input.keyboard.on('keydown-K', () => this.devGrantTools());
-    this.input.keyboard.on('keydown-V', () => this.devSolveValve());
-    this.input.keyboard.on('keydown-L', () => this.devGrantFuse());
-    this.input.keyboard.on('keydown-C', () => this.devForceCritical());
-    this.input.keyboard.on('keydown-R', () => this.devReset());
-    this.input.keyboard.on('keydown-ESC', () => {
+    this.registerKey('keydown-SPACE', () => this.handleConfirm());
+    this.registerKey('keydown-ENTER', () => this.handleConfirm());
+    this.registerKey('keydown-I', () => this.toggleInventory());
+    this.registerKey('keydown-H', () => this.toggleStatusMenu());
+    this.registerKey('keydown-P', () => this.togglePause());
+    this.registerKey('keydown-M', () => this.toggleMute());
+    this.registerKey('keydown-N', () => this.toggleReducedMotion());
+    this.registerKey('keydown-O', () => this.saveGame());
+    this.registerKey('keydown-UP', () => this.moveMenu(-1));
+    this.registerKey('keydown-DOWN', () => this.moveMenu(1));
+    this.registerKey('keydown-LEFT', () => this.moveTarget(-1));
+    this.registerKey('keydown-RIGHT', () => this.moveTarget(1));
+    this.registerKey('keydown-BACKTICK', () => this.toggleDevTools());
+    this.registerKey('keydown-B', () => this.devStartBattle());
+    this.registerKey('keydown-K', () => this.devGrantTools());
+    this.registerKey('keydown-V', () => this.devSolveValve());
+    this.registerKey('keydown-L', () => {
+      if (this.mode === TITLE) {
+        this.loadGame();
+        return;
+      }
+      this.devGrantFuse();
+    });
+    this.registerKey('keydown-C', () => this.devForceCritical());
+    this.registerKey('keydown-R', () => this.devReset());
+    this.registerKey('keydown-ESC', () => {
+      if (this.mode === TITLE) return;
+
       if (this.inventoryOpen) {
         this.inventoryOpen = false;
         this.renderWorld();
@@ -141,8 +178,25 @@ class SteamRpgScene extends Phaser.Scene {
         this.activeUnitIndex = null;
         this.addLog('Command wheel released. ATB continues.');
         this.renderBattle();
+        return;
       }
+
+      this.togglePause();
     });
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroyInputHandlers());
+  }
+
+  registerKey(eventName, handler) {
+    this.keyboardHandlers.push([eventName, handler]);
+    this.input.keyboard.on(eventName, handler);
+  }
+
+  destroyInputHandlers() {
+    this.keyboardHandlers?.forEach(([eventName, handler]) => {
+      this.input.keyboard.off(eventName, handler);
+    });
+    this.keyboardHandlers = [];
   }
 
   createWorld() {
@@ -151,12 +205,28 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   update(time, delta) {
+    if (this.mode === TITLE || this.mode === PAUSED) return;
+
     if (this.mode === WORLD) {
       this.updateWorldMovement();
       return;
     }
 
     this.updateBattle(time, delta);
+  }
+
+  renderTitle() {
+    this.clearScene();
+    this.add.rectangle(480, 270, 960, 540, 0x160d0a);
+    this.add.image(480, 150, 'gear').setScale(1.75).setAlpha(0.35);
+    this.add.text(480, 132, 'Boilerbound', this.textStyle(56, palette.amber)).setOrigin(0.5).setFontStyle('700');
+    this.add.text(480, 190, 'A steampunk ATB RPG prototype', this.textStyle(18, palette.cream)).setOrigin(0.5);
+    this.drawPanel(300, 252, 360, 164, 'Main Console');
+    this.add.text(340, 298, 'Enter / Space  Start', this.textStyle(18, palette.cream));
+    this.add.text(340, 330, 'L  Load saved run', this.textStyle(18, palette.cream));
+    this.add.text(340, 362, `M  Sound ${this.settingsState.muted ? 'Off' : 'On'}`, this.textStyle(18, palette.cream));
+    this.add.text(340, 394, `N  Motion ${this.settingsState.reducedMotion ? 'Reduced' : 'Full'}`, this.textStyle(18, palette.cream));
+    this.add.text(318, 442, 'Push to main deploys this build to GitHub Pages and Firebase.', this.textStyle(12, palette.gray));
   }
 
   renderWorld() {
@@ -223,13 +293,14 @@ class SteamRpgScene extends Phaser.Scene {
 
   drawSidebar() {
     this.add.text(SIDEBAR_X + 18, 52, 'Inventory', this.textStyle(18, palette.amber)).setFontStyle('700');
-    const items = Object.keys(itemData);
+    const items = Object.entries(itemData).filter(([, item]) => item.type === 'key');
     items.forEach((item, index) => {
+      const [name] = item;
       const y = 84 + index * 54;
-      const owned = this.inventory.has(item);
+      const owned = this.inventory.has(name);
       this.add.rectangle(SIDEBAR_X + 106, y + 17, 176, 42, owned ? 0x392417 : 0x211713)
         .setStrokeStyle(1, owned ? palette.brass : palette.gray);
-      this.add.text(SIDEBAR_X + 28, y + 4, item, this.textStyle(13, owned ? palette.cream : palette.gray)).setFontStyle('700');
+      this.add.text(SIDEBAR_X + 28, y + 4, name, this.textStyle(13, owned ? palette.cream : palette.gray)).setFontStyle('700');
       this.add.text(SIDEBAR_X + 28, y + 22, owned ? 'Acquired' : 'Missing', this.textStyle(12, owned ? palette.green : palette.copper));
     });
 
@@ -257,7 +328,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.text(78, 470, this.messageLog.at(-1) || '', this.wrappedTextStyle(15, palette.amber, 590));
     this.add.text(724, 444, 'WASD / Arrows', this.textStyle(13, palette.cream)).setFontStyle('700');
     this.add.text(724, 468, 'Space / Enter', this.textStyle(13, palette.cream)).setFontStyle('700');
-    this.add.text(724, 492, 'I Inventory  H Status', this.textStyle(13, palette.cream)).setFontStyle('700');
+    this.add.text(724, 492, 'I Inventory  P Pause', this.textStyle(13, palette.cream)).setFontStyle('700');
   }
 
   drawInventoryOverlay() {
@@ -266,25 +337,27 @@ class SteamRpgScene extends Phaser.Scene {
     this.drawPanel(146, 120, 408, 294, 'Satchel');
     this.drawPanel(580, 120, 234, 294, 'Party');
 
-    Object.entries(itemData).forEach(([item, description], index) => {
-      const y = 166 + index * 74;
-      const owned = this.inventory.has(item);
+    Object.entries(itemData).forEach(([item, data], index) => {
+      const y = 150 + index * 48;
+      const owned = data.type === 'consumable' ? this.consumables[item] > 0 : this.inventory.has(item);
+      const count = data.type === 'consumable' ? ` x${this.consumables[item] || 0}` : '';
       this.add.rectangle(350, y + 22, 360, 56, owned ? 0x3a2519 : 0x211713)
         .setStrokeStyle(1, owned ? palette.brass : palette.gray);
-      this.add.text(188, y, `${owned ? '[x]' : '[ ]'} ${item}`, this.textStyle(16, owned ? palette.cream : palette.gray)).setFontStyle('700');
-      this.add.text(188, y + 26, description, this.wrappedTextStyle(13, owned ? palette.amber : palette.gray, 322));
+      this.add.text(188, y, `${owned ? '[x]' : '[ ]'} ${item}${count}`, this.textStyle(15, owned ? palette.cream : palette.gray)).setFontStyle('700');
+      this.add.text(188, y + 24, data.description, this.wrappedTextStyle(11, owned ? palette.amber : palette.gray, 322));
     });
 
     this.party.forEach((unit, index) => {
       const y = 164 + index * 112;
+      const equipment = equipmentData[this.equipment[unit.id]];
       this.add.rectangle(697, y + 28, 176, 74, 0x211713).setStrokeStyle(1, palette.brass);
       this.add.text(620, y, unit.name, this.textStyle(17, palette.amber)).setFontStyle('700');
       this.add.text(620, y + 25, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(14, palette.cream));
       this.drawBar(620, y + 48, 154, 10, unit.hp / unit.maxHp, palette.green);
-      this.add.text(620, y + 64, statusLabel(unit), this.wrappedTextStyle(12, palette.amber, 154));
+      this.add.text(620, y + 64, equipment?.description || statusLabel(unit), this.wrappedTextStyle(11, palette.amber, 154));
     });
 
-    this.add.text(148, 430, 'Esc or I closes this menu.', this.textStyle(12, palette.gray));
+    this.add.text(148, 430, 'Esc or I closes this menu. O saves outside combat.', this.textStyle(12, palette.gray));
   }
 
   drawStatusReferenceOverlay() {
@@ -310,14 +383,14 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   drawDevTools() {
-    this.drawPanel(632, 88, 288, 210, 'Developer Tools');
+    this.drawPanel(632, 72, 288, 260, 'Developer Tools');
     this.add.text(656, 126, 'Prototype hotkeys', this.textStyle(15, palette.amber)).setFontStyle('700');
     devTools.forEach((line, index) => {
       this.add.text(656, 154 + index * 18, line, this.textStyle(13, palette.cream));
     });
     this.add.text(
       656,
-      282,
+      314,
       `Mode ${this.mode}  Crit ${this.forceNextCritical ? 'armed' : 'normal'}`,
       this.textStyle(12, palette.green),
     );
@@ -329,16 +402,23 @@ class SteamRpgScene extends Phaser.Scene {
     if (!direction) return;
 
     const next = { x: this.player.x + direction.x, y: this.player.y + direction.y };
-    if (!this.canWalk(next.x, next.y)) return;
+    if (!this.canWalk(next.x, next.y)) {
+      this.lockWorldMovement(180);
+      return;
+    }
 
     this.player = next;
     this.playSfx('step');
-    this.worldMoveLocked = true;
-    this.time.delayedCall(135, () => {
-      this.worldMoveLocked = false;
-    });
+    this.lockWorldMovement(135);
     this.handleTileStep();
     if (this.mode === WORLD) this.renderWorld();
+  }
+
+  lockWorldMovement(duration) {
+    this.worldMoveLocked = true;
+    this.time.delayedCall(duration, () => {
+      if (this.scene.isActive()) this.worldMoveLocked = false;
+    });
   }
 
   readDirection() {
@@ -394,6 +474,16 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   handleConfirm() {
+    if (this.mode === TITLE) {
+      this.startNewRun();
+      return;
+    }
+
+    if (this.mode === PAUSED) {
+      this.togglePause();
+      return;
+    }
+
     if (this.mode === WORLD) {
       if (this.inventoryOpen || this.statusMenuOpen) {
         this.inventoryOpen = false;
@@ -414,6 +504,51 @@ class SteamRpgScene extends Phaser.Scene {
     if (this.inMenu && this.activeUnitIndex !== null) {
       this.executeCommand();
     }
+  }
+
+  startNewRun() {
+    this.mode = WORLD;
+    this.previousMode = WORLD;
+    this.addLog('Run started. Factory systems are online.');
+    this.playSfx('success');
+    this.renderWorld();
+  }
+
+  togglePause() {
+    if (this.mode === TITLE) return;
+    if (this.mode === PAUSED) {
+      this.mode = this.previousMode;
+      this.renderCurrentMode();
+      return;
+    }
+
+    this.previousMode = this.mode;
+    this.mode = PAUSED;
+    this.renderPause();
+  }
+
+  renderPause() {
+    this.clearScene();
+    this.add.rectangle(480, 270, 960, 540, 0x160d0a);
+    this.drawPanel(292, 128, 376, 284, 'Paused');
+    this.add.text(336, 178, 'Enter / P  Resume', this.textStyle(18, palette.cream));
+    this.add.text(336, 214, 'O  Save run', this.textStyle(18, palette.cream));
+    this.add.text(336, 250, `M  Sound ${this.settingsState.muted ? 'Off' : 'On'}`, this.textStyle(18, palette.cream));
+    this.add.text(336, 286, `N  Motion ${this.settingsState.reducedMotion ? 'Reduced' : 'Full'}`, this.textStyle(18, palette.cream));
+    this.add.text(336, 322, 'R  Reset if dev tools are open', this.textStyle(18, palette.cream));
+    this.add.text(336, 342, this.messageLog.at(-1) || '', this.wrappedTextStyle(13, palette.amber, 290));
+  }
+
+  toggleMute() {
+    this.settingsState.muted = !this.settingsState.muted;
+    this.addLog(`Sound ${this.settingsState.muted ? 'muted' : 'enabled'}.`);
+    this.renderCurrentMode();
+  }
+
+  toggleReducedMotion() {
+    this.settingsState.reducedMotion = !this.settingsState.reducedMotion;
+    this.addLog(`Motion ${this.settingsState.reducedMotion ? 'reduced' : 'restored'}.`);
+    this.renderCurrentMode();
   }
 
   toggleInventory() {
@@ -482,9 +617,15 @@ class SteamRpgScene extends Phaser.Scene {
     this.mode = BATTLE;
     this.inMenu = false;
     this.activeUnitIndex = null;
+    this.selectedTargetIndex = 0;
+    this.battleResolved = false;
+    this.enemyActing = false;
     this.inventoryOpen = false;
     this.statusMenuOpen = false;
     this.battleEnemies = createEncounterMobs(encounters.factoryAmbush, mobs);
+    this.battleEnemies.forEach((enemy) => {
+      enemy.intent = chooseAction(enemy);
+    });
     this.addLog('Ambushed by coal-smoke machines. ATB continues while menus are open.');
     this.playSfx('battle');
     this.renderBattle();
@@ -505,15 +646,21 @@ class SteamRpgScene extends Phaser.Scene {
   drawBattleActors() {
     this.battleEnemies.forEach((enemy) => {
       if (enemy.hp <= 0) return;
-      this.add.image(enemy.x, enemy.y, 'enemy').setScale(1.72).setTint(enemy.tint);
+      const effect = this.getHitEffect(enemy.id);
+      const isTargeted = this.getSelectedEnemy() === enemy && this.inMenu;
+      this.add.image(enemy.x + effect.x, enemy.y + effect.y, 'enemy').setScale(1.72).setTint(enemy.tint);
       this.add.ellipse(enemy.x, enemy.y + 56, 104, 16, 0x0d0907, 0.36);
+      if (isTargeted) {
+        this.add.triangle(enemy.x, enemy.y - 54, 0, 0, 18, -22, 36, 0, palette.amber).setOrigin(0.5);
+      }
     });
 
     this.party.forEach((hero, index) => {
       if (hero.hp <= 0) return;
       const x = 704 + index * 112;
       const y = 250 + index * 72;
-      this.add.image(x, y, 'hero').setScale(1.65).setTint(index === 0 ? palette.blue : palette.green);
+      const effect = this.getHitEffect(hero.id);
+      this.add.image(x + effect.x, y + effect.y, 'hero').setScale(1.65).setTint(index === 0 ? palette.blue : palette.green);
       this.add.ellipse(x, y + 56, 96, 14, 0x0d0907, 0.34);
     });
   }
@@ -539,7 +686,8 @@ class SteamRpgScene extends Phaser.Scene {
       this.drawBar(x + 78, y + 33, 112, 9, enemy.hp / enemy.maxHp, palette.red);
       this.add.text(x + 14, y + 46, 'ATB', this.textStyle(9, palette.gray));
       this.drawBar(x + 78, y + 47, 112, 7, enemy.atb / 100, palette.amber);
-      this.add.text(x + 14, y + 58, this.compactStatusLabel(enemy), this.wrappedTextStyle(10, palette.cream, 178));
+      this.add.text(x + 14, y + 58, this.compactStatusLabel(enemy), this.wrappedTextStyle(10, palette.cream, 84));
+      this.add.text(x + 102, y + 58, `Intent: ${enemy.intent?.name || 'Attack'}`, this.wrappedTextStyle(10, palette.amber, 90));
     });
   }
 
@@ -559,14 +707,33 @@ class SteamRpgScene extends Phaser.Scene {
 
   drawCommandMenu() {
     const unit = this.party[this.activeUnitIndex];
+    const commands = this.getCommandOptions(unit);
+    if (this.selectedCommand >= commands.length) this.selectedCommand = 0;
     this.drawPanel(626, 382, 316, 142, `${unit.name} Orders`);
-    unit.skills.forEach((skill, index) => {
-      const y = 418 + index * 26;
+    commands.forEach((command, index) => {
+      const y = 412 + index * 22;
       const selected = index === this.selectedCommand;
-      this.add.rectangle(784, y + 9, 268, 22, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
-      this.add.text(650, y, `${selected ? '>' : ' '} ${skill.name}`, this.textStyle(14, selected ? palette.amber : palette.cream));
+      this.add.rectangle(784, y + 9, 268, 20, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
+      this.add.text(650, y, `${selected ? '>' : ' '} ${command.name}`, this.textStyle(13, selected ? palette.amber : palette.cream));
     });
-    this.add.text(650, 502, unit.skills[this.selectedCommand].description, this.wrappedTextStyle(10, palette.cream, 260));
+    this.add.text(650, 496, commands[this.selectedCommand].description, this.wrappedTextStyle(10, palette.cream, 260));
+    if (commands[this.selectedCommand].target === 'enemy') {
+      this.add.text(850, 496, '< > target', this.textStyle(10, palette.gray));
+    }
+  }
+
+  getCommandOptions(unit) {
+    const skills = unit.skills.map((skill) => ({ ...skill, commandType: 'skill' }));
+    const items = Object.entries(this.consumables)
+      .filter(([, count]) => count > 0)
+      .map(([name, count]) => ({
+        name: `${name} x${count}`,
+        itemName: name,
+        target: 'ally',
+        commandType: 'item',
+        description: itemData[name].description,
+      }));
+    return [...skills, ...items];
   }
 
   compactStatusLabel(unit) {
@@ -580,13 +747,21 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   updateBattle(time, delta) {
+    if (this.battleResolved) return;
+
     if (this.party.every((unit) => unit.hp <= 0)) {
+      this.battleResolved = true;
+      this.inMenu = false;
+      this.activeUnitIndex = null;
       this.addLog('The boilers go cold. Refresh to retry.');
       this.renderBattle();
       return;
     }
 
     if (this.battleEnemies.every((unit) => unit.hp <= 0)) {
+      this.battleResolved = true;
+      this.inMenu = false;
+      this.activeUnitIndex = null;
       this.enemyCleared = true;
       this.clearBattleStatuses();
       this.addItem('Aether Fuse');
@@ -622,7 +797,7 @@ class SteamRpgScene extends Phaser.Scene {
       return;
     }
 
-    if (time - this.lastBattleRender > 180) {
+    if (time - this.lastBattleRender > 500) {
       this.lastBattleRender = time;
       this.renderBattle();
     }
@@ -630,15 +805,25 @@ class SteamRpgScene extends Phaser.Scene {
 
   moveMenu(direction) {
     if (this.statusMenuOpen || !this.inMenu || this.activeUnitIndex === null) return;
-    const skills = this.party[this.activeUnitIndex].skills;
-    this.selectedCommand = Phaser.Math.Wrap(this.selectedCommand + direction, 0, skills.length);
+    const commands = this.getCommandOptions(this.party[this.activeUnitIndex]);
+    this.selectedCommand = Phaser.Math.Wrap(this.selectedCommand + direction, 0, commands.length);
+    this.playSfx('menu');
+    this.renderBattle();
+  }
+
+  moveTarget(direction) {
+    if (!this.inMenu || this.activeUnitIndex === null) return;
+    const command = this.getCommandOptions(this.party[this.activeUnitIndex])[this.selectedCommand];
+    if (command.target !== 'enemy') return;
+    const livingEnemies = this.battleEnemies.filter((unit) => unit.hp > 0);
+    this.selectedTargetIndex = Phaser.Math.Wrap(this.selectedTargetIndex + direction, 0, livingEnemies.length);
     this.playSfx('menu');
     this.renderBattle();
   }
 
   executeCommand() {
     const actor = this.party[this.activeUnitIndex];
-    const skill = actor.skills[this.selectedCommand];
+    const command = this.getCommandOptions(actor)[this.selectedCommand];
 
     if (hasStatus(actor, 'stunned')) {
       this.addLog(`${actor.name} is stunned; ATB pressure is paused.`);
@@ -664,25 +849,41 @@ class SteamRpgScene extends Phaser.Scene {
       }
     }
 
-    if (skill.target === 'ally') {
+    if (command.commandType === 'item') {
+      this.useCombatItem(actor, command.itemName);
+    } else if (command.target === 'ally') {
       const target = this.party.reduce((lowest, unit) => (unit.hp < lowest.hp ? unit : lowest), this.party[0]);
-      target.hp = Math.min(target.maxHp, target.hp - skill.power);
-      if (skill.cleanse) target.statuses = [];
-      this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, Math.abs(skill.power), false, 'heal');
-      this.addLog(`${actor.name} uses ${skill.name} on ${target.name}.`);
+      const healAmount = Math.abs(command.power) + this.getHealBonus(actor);
+      target.hp = Math.min(target.maxHp, target.hp + healAmount);
+      if (command.cleanse) target.statuses = [];
+      this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, healAmount, false, 'heal');
+      this.addLog(`${actor.name} uses ${command.name} on ${target.name}.`);
       this.playSfx('heal');
     } else {
-      const target = this.battleEnemies.find((unit) => unit.hp > 0);
-      const { damage, critical } = this.rollDamage(skill.power, actor, target);
+      const target = this.getSelectedEnemy();
+      const { damage, critical } = this.rollDamage(command.power, actor, target);
       target.hp = Math.max(0, target.hp - damage);
-      if (skill.status && Math.random() < (skill.statusChance ?? 1)) this.applyStatus(target, skill.status);
-      if (skill.selfStatus) this.applyStatus(actor, skill.selfStatus, 4);
+      if (command.status && Math.random() < (command.statusChance ?? 1)) this.applyStatus(target, command.status);
+      if (command.selfStatus) this.applyStatus(actor, command.selfStatus, 4);
+      this.spawnHitEffect(target.id);
       this.spawnDamageNumber(target.x, target.y - 54, damage, critical, 'damage');
-      this.addLog(`${actor.name} uses ${skill.name} for ${damage} damage${critical ? ' - CRITICAL!' : '.'}`);
+      this.addLog(`${actor.name} uses ${command.name} on ${target.name} for ${damage} damage${critical ? ' - CRITICAL!' : '.'}`);
       this.playSfx('hit');
     }
 
     this.consumeTurn(actor);
+  }
+
+  useCombatItem(actor, itemName) {
+    const item = itemData[itemName];
+    const target = this.party.reduce((lowest, unit) => (unit.hp < lowest.hp ? unit : lowest), this.party[0]);
+    const healAmount = (item.heal || 0) + this.getHealBonus(actor);
+    target.hp = Math.min(target.maxHp, target.hp + healAmount);
+    if (item.cleanse) target.statuses = [];
+    this.consumables[itemName] = Math.max(0, (this.consumables[itemName] || 0) - 1);
+    this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, healAmount, false, 'heal');
+    this.addLog(`${actor.name} uses ${itemName} on ${target.name}.`);
+    this.playSfx('heal');
   }
 
   enemyAction(enemy) {
@@ -701,14 +902,16 @@ class SteamRpgScene extends Phaser.Scene {
       }
     }
 
-    const action = chooseAction(enemy);
+    const action = enemy.intent || chooseAction(enemy);
     const result = this.resolveEnemyAction(enemy, action, target);
     target.hp = Math.max(0, target.hp - result.damage);
+    this.spawnHitEffect(target.id);
     this.spawnDamageNumber(this.getPartyActorX(target), this.getPartyActorY(target) - 58, result.damage, result.critical, 'damage');
     this.tickGlobalStatuses();
     if (result.status) this.applyStatus(target, result.status.name, result.status.turns);
 
     enemy.atb = 0;
+    enemy.intent = chooseAction(enemy);
     this.tickStatuses(enemy);
     this.addLog(
       `${enemy.name} ${action.log || `uses ${action.name}`} on ${target.name} for ${result.damage}${
@@ -726,10 +929,17 @@ class SteamRpgScene extends Phaser.Scene {
     this.tickGlobalStatuses();
     this.inMenu = false;
     this.activeUnitIndex = null;
-    this.time.delayedCall(160, () => this.renderBattle());
+    this.time.delayedCall(160, () => {
+      if (this.scene.isActive() && this.mode === BATTLE && !this.battleResolved) this.renderBattle();
+    });
   }
 
   addItem(item) {
+    if (itemData[item]?.type === 'consumable') {
+      this.consumables[item] = (this.consumables[item] || 0) + 1;
+      this.playSfx('item');
+      return;
+    }
     this.inventory.add(item);
     this.playSfx('item');
   }
@@ -759,12 +969,76 @@ class SteamRpgScene extends Phaser.Scene {
     this.messageLog = this.messageLog.slice(-6);
   }
 
+  saveGame() {
+    if (this.mode === TITLE || this.mode === BATTLE) {
+      this.addLog('Save is available outside combat.');
+      if (this.mode !== TITLE) this.renderCurrentMode();
+      return;
+    }
+
+    const state = {
+      inventory: [...this.inventory],
+      consumables: this.consumables,
+      equipment: this.equipment,
+      party: this.party.map((unit) => ({ id: unit.id, hp: unit.hp })),
+      player: this.player,
+      valveInput: this.valveInput,
+      valveSolved: this.valveSolved,
+      gateOpen: this.gateOpen,
+      enemyCleared: this.enemyCleared,
+      gameComplete: this.gameComplete,
+      settingsState: this.settingsState,
+    };
+    localStorage.setItem('boilerbound-save', JSON.stringify(state));
+    this.addLog('Run saved locally.');
+    this.playSfx('success');
+    this.renderCurrentMode();
+  }
+
+  loadGame() {
+    const rawSave = localStorage.getItem('boilerbound-save');
+    if (!rawSave) {
+      this.addLog('No local save found.');
+      this.playSfx('error');
+      this.renderTitle();
+      return;
+    }
+
+    const state = JSON.parse(rawSave);
+    this.inventory = new Set(state.inventory || []);
+    this.consumables = { ...this.consumables, ...(state.consumables || {}) };
+    this.equipment = { ...this.equipment, ...(state.equipment || {}) };
+    this.player = state.player || this.player;
+    this.valveInput = state.valveInput || [];
+    this.valveSolved = Boolean(state.valveSolved);
+    this.gateOpen = Boolean(state.gateOpen);
+    this.enemyCleared = Boolean(state.enemyCleared);
+    this.gameComplete = Boolean(state.gameComplete);
+    this.settingsState = { ...this.settingsState, ...(state.settingsState || {}) };
+    this.party.forEach((unit) => {
+      const savedUnit = state.party?.find((entry) => entry.id === unit.id);
+      if (savedUnit) unit.hp = Phaser.Math.Clamp(savedUnit.hp, 1, unit.maxHp);
+    });
+    if (this.enemyCleared) this.replaceWorldTile('E', '.');
+    this.mode = WORLD;
+    this.previousMode = WORLD;
+    this.addLog('Local save loaded.');
+    this.playSfx('success');
+    this.renderWorld();
+  }
+
   rollDamage(basePower, attacker, target, criticalChance = 0.15) {
+    const equipment = equipmentData[this.equipment[attacker.id]];
+    const adjustedPower = basePower + (equipment?.damageBonus || 0);
     if (this.forceNextCritical) {
       this.forceNextCritical = false;
-      return rollAttackDamage(basePower, attacker, target, 1);
+      return rollAttackDamage(adjustedPower, attacker, target, 1);
     }
-    return rollAttackDamage(basePower, attacker, target, criticalChance);
+    return rollAttackDamage(adjustedPower, attacker, target, criticalChance);
+  }
+
+  getHealBonus(unit) {
+    return equipmentData[this.equipment[unit.id]]?.healBonus || 0;
   }
 
   resolveEnemyAction(enemy, action, target) {
@@ -808,6 +1082,30 @@ class SteamRpgScene extends Phaser.Scene {
     });
   }
 
+  spawnHitEffect(unitId) {
+    if (this.settingsState.reducedMotion) return;
+    this.hitEffects.push({ unitId, createdAt: this.time.now });
+  }
+
+  getHitEffect(unitId) {
+    const now = this.time.now;
+    this.hitEffects = this.hitEffects.filter((effect) => now - effect.createdAt < 260);
+    const effect = this.hitEffects.find((entry) => entry.unitId === unitId);
+    if (!effect) return { x: 0, y: 0 };
+    const age = now - effect.createdAt;
+    return {
+      x: Math.sin(age / 18) * 7,
+      y: Math.sin(age / 24) * 3,
+    };
+  }
+
+  getSelectedEnemy() {
+    const livingEnemies = this.battleEnemies.filter((unit) => unit.hp > 0);
+    if (!livingEnemies.length) return null;
+    this.selectedTargetIndex = Phaser.Math.Clamp(this.selectedTargetIndex, 0, livingEnemies.length - 1);
+    return livingEnemies[this.selectedTargetIndex];
+  }
+
   getPartyActorX(unit) {
     return 704 + this.party.indexOf(unit) * 112;
   }
@@ -820,8 +1118,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.devToolsOpen = !this.devToolsOpen;
     this.addLog(`Developer tools ${this.devToolsOpen ? 'shown' : 'hidden'}.`);
     this.playSfx('menu');
-    if (this.mode === WORLD) this.renderWorld();
-    if (this.mode === BATTLE) this.renderBattle();
+    this.renderCurrentMode();
   }
 
   devStartBattle() {
@@ -869,8 +1166,10 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   renderCurrentMode() {
+    if (this.mode === TITLE) this.renderTitle();
     if (this.mode === WORLD) this.renderWorld();
     if (this.mode === BATTLE) this.renderBattle();
+    if (this.mode === PAUSED) this.renderPause();
   }
 
   clearBattleStatuses() {
@@ -898,7 +1197,7 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   clearScene() {
-    this.children.removeAll();
+    [...this.children.getChildren()].forEach((child) => child.destroy());
   }
 }
 

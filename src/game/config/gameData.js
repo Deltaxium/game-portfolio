@@ -1,5 +1,7 @@
 export const WORLD = 'world';
 export const BATTLE = 'battle';
+export const TITLE = 'title';
+export const PAUSED = 'paused';
 
 export const TILE = 34;
 export const MAP_X = 22;
@@ -23,9 +25,44 @@ export const palette = {
 };
 
 export const itemData = {
-  'Brass Key': 'Unlocks chained pressure machinery.',
-  'Pressure Gauge': 'Reveals the safe valve order.',
-  'Aether Fuse': 'Powers the factory lift.',
+  'Brass Key': {
+    type: 'key',
+    description: 'Unlocks chained pressure machinery.',
+  },
+  'Pressure Gauge': {
+    type: 'key',
+    description: 'Reveals the safe valve order.',
+  },
+  'Aether Fuse': {
+    type: 'key',
+    description: 'Powers the factory lift.',
+  },
+  'Steam Tonic': {
+    type: 'consumable',
+    description: 'Restores 34 HP to the weakest ally in combat.',
+    heal: 34,
+  },
+  'Coolant Ampoule': {
+    type: 'consumable',
+    description: 'Clears statuses and restores 12 HP in combat.',
+    heal: 12,
+    cleanse: true,
+  },
+};
+
+export const equipmentData = {
+  'Riveted Saber': {
+    owner: 'ada',
+    slot: 'weapon',
+    description: '+4 damage on attacks.',
+    damageBonus: 4,
+  },
+  'Medic Boiler': {
+    owner: 'brass',
+    slot: 'tool',
+    description: '+8 HP repaired by healing skills and items.',
+    healBonus: 8,
+  },
 };
 
 export const valveSequence = ['red', 'amber', 'blue'];
@@ -101,5 +138,9 @@ export const devTools = [
   'L Grant fuse',
   'C Force crit',
   'H Status reference',
+  'P Pause',
+  'O Save',
+  'M Mute',
+  'N Motion',
   'R Reset slice',
 ];

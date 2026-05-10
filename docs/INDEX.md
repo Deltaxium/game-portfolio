@@ -10,6 +10,7 @@ Start here when changing the project.
 - `docs/game-design.md`: current game pillars, controls, RPG systems, and content rules.
 - `docs/content-authoring.md`: how to add mobs, encounters, and skills without touching engine code.
 - `docs/deployment.md`: GitHub Pages and Firebase Hosting workflow notes.
+- `docs/agents.md`: recommended project agents and their role files.
 
 ## Source Entry Points
 
