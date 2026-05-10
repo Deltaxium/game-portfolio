@@ -234,6 +234,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.rectangle(480, 270, 960, 540, 0x21140f);
     this.drawWorldFrame();
     this.drawMap();
+    this.drawMapHeader();
     this.drawSidebar();
     this.drawMessagePanel();
     if (this.inventoryOpen) this.drawInventoryOverlay();
@@ -242,10 +243,15 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   drawWorldFrame() {
-    this.drawPanel(14, 14, 694, 392, 'Factory District');
+    this.drawPanel(14, 14, 694, 392);
     this.add.rectangle(365, 416, 690, 6, palette.brass).setAlpha(0.85);
     this.drawPanel(SIDEBAR_X, 14, 214, 392, 'Satchel');
     this.drawPanel(14, 424, 924, 96, 'Console');
+  }
+
+  drawMapHeader() {
+    this.add.rectangle(143, 32, 156, 24, palette.panel, 0.96).setStrokeStyle(1, palette.copper);
+    this.add.text(78, 23, 'Factory District', this.textStyle(14, palette.amber)).setFontStyle('700');
   }
 
   drawMap() {
