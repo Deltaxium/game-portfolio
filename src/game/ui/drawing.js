@@ -13,6 +13,7 @@ export function textStyle(size, color) {
 export function wrappedTextStyle(size, color, width) {
   return {
     ...textStyle(size, color),
+    lineSpacing: 2,
     wordWrap: { width, useAdvancedWrap: true },
   };
 }

@@ -425,6 +425,13 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   toggleStatusMenu() {
+    if (this.mode === BATTLE) {
+      this.addLog('Status reference is available outside combat.');
+      this.playSfx('error');
+      this.renderBattle();
+      return;
+    }
+
     this.statusMenuOpen = !this.statusMenuOpen;
     if (this.statusMenuOpen) this.inventoryOpen = false;
     this.playSfx('menu');
@@ -475,6 +482,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.mode = BATTLE;
     this.inMenu = false;
     this.activeUnitIndex = null;
+    this.inventoryOpen = false;
+    this.statusMenuOpen = false;
     this.battleEnemies = createEncounterMobs(encounters.factoryAmbush, mobs);
     this.addLog('Ambushed by coal-smoke machines. ATB continues while menus are open.');
     this.playSfx('battle');
@@ -490,7 +499,6 @@ class SteamRpgScene extends Phaser.Scene {
     this.drawBattleActors();
     this.drawDamagePopups();
     this.drawBattleHud();
-    if (this.statusMenuOpen) this.drawStatusReferenceOverlay();
     if (this.devToolsOpen) this.drawDevTools();
   }
 
@@ -498,10 +506,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.battleEnemies.forEach((enemy) => {
       if (enemy.hp <= 0) return;
       this.add.image(enemy.x, enemy.y, 'enemy').setScale(1.72).setTint(enemy.tint);
-      this.add.text(enemy.x - 58, enemy.y + 58, enemy.name, this.textStyle(14, palette.cream)).setFontStyle('700');
-      this.drawBar(enemy.x - 55, enemy.y + 82, 110, 10, enemy.hp / enemy.maxHp, palette.red);
-      this.drawBar(enemy.x - 55, enemy.y + 96, 110, 8, enemy.atb / 100, palette.amber);
-      this.add.text(enemy.x - 55, enemy.y + 108, statusLabel(enemy), this.textStyle(11, palette.amber));
+      this.add.ellipse(enemy.x, enemy.y + 56, 104, 16, 0x0d0907, 0.36);
     });
 
     this.party.forEach((hero, index) => {
@@ -509,49 +514,69 @@ class SteamRpgScene extends Phaser.Scene {
       const x = 704 + index * 112;
       const y = 250 + index * 72;
       this.add.image(x, y, 'hero').setScale(1.65).setTint(index === 0 ? palette.blue : palette.green);
-      this.add.text(x - 50, y + 59, hero.name, this.textStyle(14, palette.cream)).setFontStyle('700');
-      this.drawBar(x - 54, y + 82, 108, 10, hero.hp / hero.maxHp, palette.green);
-      this.drawBar(x - 54, y + 96, 108, 8, hero.atb / 100, palette.amber);
+      this.add.ellipse(x, y + 56, 96, 14, 0x0d0907, 0.34);
     });
   }
 
   drawBattleHud() {
-    this.drawPanel(18, 386, 594, 136, 'Command Deck');
-    this.drawPanel(626, 386, 316, 136, this.inMenu && this.activeUnitIndex !== null ? 'Orders' : 'Status');
-    this.add.text(42, 420, this.messageLog.at(-1) || '', this.wrappedTextStyle(15, palette.cream, 530));
-
-    this.party.forEach((unit, index) => {
-      const x = 42 + index * 270;
-      const y = 460;
-      this.add.text(x, y, `${unit.name}  ${unit.role}`, this.textStyle(13, palette.amber)).setFontStyle('700');
-      this.add.text(x, y + 22, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(13, palette.cream));
-      this.drawBar(x + 82, y + 27, 138, 10, unit.atb / 100, palette.amber);
-      this.add.text(x, y + 45, statusLabel(unit), this.textStyle(12, palette.cream));
-    });
+    this.drawEnemyPlates();
+    this.drawPartyPlates();
+    this.drawPanel(18, 382, 594, 142, 'Command Deck');
+    this.add.text(42, 418, this.messageLog.at(-1) || '', this.wrappedTextStyle(14, palette.cream, 520));
 
     if (this.inMenu && this.activeUnitIndex !== null) {
       this.drawCommandMenu();
-    } else {
-      this.drawStatusLegend();
     }
+  }
+
+  drawEnemyPlates() {
+    this.battleEnemies.forEach((enemy, index) => {
+      const x = 24 + index * 222;
+      const y = 22;
+      this.add.rectangle(x + 104, y + 41, 208, 68, 0x211713, 0.95).setStrokeStyle(2, palette.brass);
+      this.add.text(x + 14, y + 10, enemy.name, this.textStyle(13, palette.amber)).setFontStyle('700');
+      this.add.text(x + 14, y + 28, `HP ${enemy.hp}/${enemy.maxHp}`, this.textStyle(12, palette.cream));
+      this.drawBar(x + 78, y + 33, 112, 9, enemy.hp / enemy.maxHp, palette.red);
+      this.add.text(x + 14, y + 46, 'ATB', this.textStyle(9, palette.gray));
+      this.drawBar(x + 78, y + 47, 112, 7, enemy.atb / 100, palette.amber);
+      this.add.text(x + 14, y + 58, this.compactStatusLabel(enemy), this.wrappedTextStyle(10, palette.cream, 178));
+    });
+  }
+
+  drawPartyPlates() {
+    this.party.forEach((unit, index) => {
+      const x = 626 + index * 158;
+      const y = 392;
+      this.add.rectangle(x + 74, y + 58, 148, 112, 0x211713, 0.96).setStrokeStyle(2, palette.brass);
+      this.add.text(x + 12, y + 10, unit.name, this.textStyle(14, palette.amber)).setFontStyle('700');
+      this.add.text(x + 12, y + 30, unit.role, this.wrappedTextStyle(10, palette.gray, 122));
+      this.add.text(x + 12, y + 50, `HP ${unit.hp}/${unit.maxHp}`, this.textStyle(12, palette.cream));
+      this.drawBar(x + 12, y + 68, 120, 9, unit.hp / unit.maxHp, palette.green);
+      this.drawBar(x + 12, y + 84, 120, 8, unit.atb / 100, palette.amber);
+      this.add.text(x + 12, y + 96, this.compactStatusLabel(unit), this.wrappedTextStyle(10, palette.cream, 120));
+    });
   }
 
   drawCommandMenu() {
     const unit = this.party[this.activeUnitIndex];
-    this.add.text(650, 420, unit.name, this.textStyle(13, palette.amber)).setFontStyle('700');
+    this.drawPanel(626, 382, 316, 142, `${unit.name} Orders`);
     unit.skills.forEach((skill, index) => {
-      const y = 444 + index * 22;
+      const y = 418 + index * 26;
       const selected = index === this.selectedCommand;
-      this.add.rectangle(784, y + 9, 270, 20, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
+      this.add.rectangle(784, y + 9, 268, 22, selected ? 0x553018 : 0x000000, selected ? 0.9 : 0);
       this.add.text(650, y, `${selected ? '>' : ' '} ${skill.name}`, this.textStyle(14, selected ? palette.amber : palette.cream));
     });
-    this.add.text(650, 510, unit.skills[this.selectedCommand].description, this.wrappedTextStyle(11, palette.cream, 260));
+    this.add.text(650, 502, unit.skills[this.selectedCommand].description, this.wrappedTextStyle(10, palette.cream, 260));
   }
 
-  drawStatusLegend() {
-    Object.values(statusRules).forEach((rule, index) => {
-      this.add.text(650, 420 + index * 24, `${rule.label}: ${rule.summary}`, this.wrappedTextStyle(10, palette.cream, 260));
-    });
+  compactStatusLabel(unit) {
+    if (!unit.statuses.length) return 'Normal';
+    return unit.statuses
+      .map((status) => {
+        const label = statusRules[status.name]?.label || status.name;
+        return status.turns ? `${label} ${status.turns}` : label;
+      })
+      .join(', ');
   }
 
   updateBattle(time, delta) {
