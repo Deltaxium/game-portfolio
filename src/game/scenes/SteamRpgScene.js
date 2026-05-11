@@ -269,32 +269,107 @@ class SteamRpgScene extends Phaser.Scene {
     const px = MAP_X + x * TILE;
     const py = MAP_Y + y * TILE;
     const isWall = tile === '#';
-    const fill = isWall ? palette.smoke : (x + y) % 2 === 0 ? 0x382419 : 0x312017;
-    this.add.rectangle(px + TILE / 2, py + TILE / 2, TILE - 2, TILE - 2, fill).setStrokeStyle(1, 0x5f3d24);
+    this.drawFactoryBaseTile(px, py, x, y, isWall);
 
     if (tile === 'K' && !this.inventory.has('Brass Key')) {
-      this.add.image(px + 17, py + 17, 'gear').setScale(0.34).setTint(palette.amber);
+      this.drawKeyStation(px, py);
     }
     if (tile === 'S' && !this.inventory.has('Pressure Gauge')) {
-      this.add.circle(px + 17, py + 17, 10, palette.cream).setStrokeStyle(3, palette.brass);
-      this.add.line(px + 17, py + 17, 0, 0, 8, -6, palette.red).setLineWidth(2);
+      this.drawGaugeStation(px, py);
     }
     if (tile === 'V') {
-      drawValveMarker(this, px + 17, py + 17, this.valveSolved);
+      this.drawValveStation(px, py);
     }
     if (tile === 'G' && !this.gateOpen) {
-      this.add.rectangle(px + 17, py + 17, 26, 31, palette.red).setStrokeStyle(2, palette.amber);
+      this.drawPressureGate(px, py);
     }
     if (tile === 'E' && !this.enemyCleared) {
-      this.add.image(px + 17, py + 17, 'enemy').setScale(0.55).setTint(palette.copper);
+      this.drawEnemyStation(px, py);
     }
     if (tile === 'F') {
-      this.add.rectangle(px + 17, py + 17, 24, 24, this.inventory.has('Aether Fuse') ? palette.green : palette.gray)
-        .setStrokeStyle(2, palette.amber);
+      this.drawLiftSocket(px, py);
     }
     if (tile === 'P') {
-      this.add.text(px + 9, py + 4, '?', this.textStyle(22, palette.amber)).setFontStyle('700');
+      this.drawBlueprintStation(px, py);
     }
+  }
+
+  drawFactoryBaseTile(px, py, x, y, isWall) {
+    if (isWall) {
+      this.add.rectangle(px + 17, py + 17, TILE - 2, TILE - 2, 0x4b3b34).setStrokeStyle(1, 0x2a1a12);
+      this.add.rectangle(px + 17, py + 17, TILE - 8, TILE - 8, 0x5b4840, 0.72).setStrokeStyle(1, 0x332016);
+      this.add.line(px + 17, py + 17, -13, 0, 13, 0, 0x251711, 0.7).setLineWidth(2);
+      this.add.line(px + 17, py + 17, 0, -13, 0, 13, palette.copper, 0.42).setLineWidth(2);
+      this.add.circle(px + 8, py + 8, 2, palette.brass, 0.7);
+      this.add.circle(px + 26, py + 26, 2, palette.brass, 0.55);
+      if ((x + y) % 3 === 0) {
+        this.add.rectangle(px + 17, py + 6, 22, 4, palette.iron, 0.8).setStrokeStyle(1, palette.copper);
+      }
+      return;
+    }
+
+    const fill = (x + y) % 2 === 0 ? 0x2e211b : 0x261a15;
+    this.add.rectangle(px + 17, py + 17, TILE - 2, TILE - 2, fill).setStrokeStyle(1, 0x4a2d1b);
+    this.add.rectangle(px + 17, py + 17, TILE - 9, TILE - 9, 0x35231a, 0.55).setStrokeStyle(1, 0x53341f);
+    this.add.line(px + 17, py + 17, -12, -12, 12, 12, 0x1a100c, 0.38).setLineWidth(1);
+    this.add.circle(px + 8, py + 8, 1.6, palette.brass, 0.56);
+    this.add.circle(px + 26, py + 26, 1.6, palette.brass, 0.42);
+    if ((x + y) % 5 === 0) {
+      this.add.rectangle(px + 17, py + 17, 18, 5, 0x1b110d, 0.75).setStrokeStyle(1, palette.smoke);
+      for (let i = 0; i < 3; i += 1) {
+        this.add.line(px + 10 + i * 6, py + 17, 0, -3, 0, 3, palette.copper, 0.55).setLineWidth(1);
+      }
+    }
+  }
+
+  drawKeyStation(px, py) {
+    this.add.rectangle(px + 17, py + 18, 24, 24, 0x1b110d, 0.9).setStrokeStyle(2, palette.brass);
+    this.add.image(px + 17, py + 15, 'gear').setScale(0.28).setTint(palette.amber);
+    this.add.rectangle(px + 17, py + 25, 12, 5, palette.brass);
+  }
+
+  drawGaugeStation(px, py) {
+    this.add.rectangle(px + 17, py + 17, 28, 22, 0x1b110d, 0.95).setStrokeStyle(2, palette.copper);
+    this.add.circle(px + 17, py + 15, 10, palette.cream).setStrokeStyle(3, palette.brass);
+    this.add.line(px + 17, py + 15, 0, 0, 7, -5, palette.red).setLineWidth(2);
+    this.add.rectangle(px + 17, py + 29, 18, 4, palette.iron);
+  }
+
+  drawValveStation(px, py) {
+    this.add.rectangle(px + 17, py + 17, 30, 30, 0x1b110d, 0.85).setStrokeStyle(2, palette.copper);
+    this.add.line(px + 17, py + 17, -17, 0, 17, 0, palette.copper, 0.75).setLineWidth(4);
+    this.add.line(px + 17, py + 17, 0, -17, 0, 17, palette.copper, 0.75).setLineWidth(4);
+    drawValveMarker(this, px + 17, py + 17, this.valveSolved);
+  }
+
+  drawPressureGate(px, py) {
+    this.add.rectangle(px + 17, py + 17, 27, 31, palette.iron).setStrokeStyle(2, palette.amber);
+    for (let i = 0; i < 4; i += 1) {
+      const color = i % 2 === 0 ? palette.amber : palette.red;
+      this.add.rectangle(px + 8 + i * 6, py + 17, 5, 29, color, 0.86);
+    }
+    this.add.circle(px + 17, py + 17, 5, palette.coal).setStrokeStyle(2, palette.brass);
+  }
+
+  drawEnemyStation(px, py) {
+    this.add.rectangle(px + 17, py + 25, 28, 8, 0x130c09, 0.6);
+    this.add.image(px + 17, py + 16, 'enemy').setScale(0.55).setTint(palette.copper);
+    this.add.circle(px + 25, py + 10, 3, palette.red, 0.9);
+  }
+
+  drawLiftSocket(px, py) {
+    const active = this.inventory.has('Aether Fuse');
+    this.add.rectangle(px + 17, py + 17, 28, 28, active ? 0x284222 : palette.iron).setStrokeStyle(2, palette.amber);
+    this.add.rectangle(px + 17, py + 17, 16, 16, active ? palette.green : palette.gray);
+    this.add.line(px + 17, py + 17, -12, -12, 12, 12, palette.copper, 0.75).setLineWidth(2);
+    this.add.line(px + 17, py + 17, -12, 12, 12, -12, palette.copper, 0.75).setLineWidth(2);
+  }
+
+  drawBlueprintStation(px, py) {
+    this.add.rectangle(px + 17, py + 18, 22, 26, 0x21313a).setStrokeStyle(2, palette.brass);
+    this.add.line(px + 17, py + 15, -7, -4, 7, -4, palette.cream, 0.8).setLineWidth(1);
+    this.add.line(px + 17, py + 20, -7, 0, 7, 0, palette.cream, 0.8).setLineWidth(1);
+    this.add.text(px + 13, py + 20, '?', this.textStyle(14, palette.amber)).setFontStyle('700');
   }
 
   drawSidebar() {
