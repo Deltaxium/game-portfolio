@@ -81,6 +81,17 @@ export const worldTiles = [
   '####################',
 ];
 
+export const worldMap = {
+  id: 'factoryDistrict',
+  name: 'Factory District',
+  randomEncounters: {
+    enabled: true,
+    minSteps: 15,
+    maxSteps: 30,
+    encounters: ['factoryAmbush'],
+  },
+};
+
 export const statusRules = {
   jamming: {
     label: 'Jamming',

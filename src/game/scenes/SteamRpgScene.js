@@ -15,6 +15,7 @@ import {
   statusRules,
   devTools,
   valveSequence,
+  worldMap,
   worldTiles,
 } from '../config/gameData.js';
 import { encounters } from '../content/encounters.js';
@@ -79,6 +80,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.lastBattleRender = 0;
     this.battleResolved = false;
     this.enemyActing = false;
+    this.currentEncounter = null;
+    this.stepsUntilEncounter = 0;
     this.damagePopups = [];
     this.hitEffects = [];
     this.devToolsOpen = false;
@@ -204,6 +207,7 @@ class SteamRpgScene extends Phaser.Scene {
   createWorld() {
     this.worldTiles = [...worldTiles];
     this.player = { x: 5, y: 9 };
+    this.stepsUntilEncounter = this.rollStepsUntilEncounter();
   }
 
   update(time, delta) {
@@ -253,7 +257,7 @@ class SteamRpgScene extends Phaser.Scene {
 
   drawMapHeader() {
     this.add.rectangle(143, 32, 156, 24, palette.panel, 0.96).setStrokeStyle(1, palette.copper);
-    this.add.text(78, 23, 'Factory District', this.textStyle(14, palette.amber)).setFontStyle('700');
+    this.add.text(78, 23, worldMap.name, this.textStyle(14, palette.amber)).setFontStyle('700');
   }
 
   drawMap() {
@@ -553,7 +557,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.text(
       656,
       314,
-      `Mode ${this.mode}  Crit ${this.forceNextCritical ? 'armed' : 'normal'}`,
+      `Mode ${this.mode}  Crit ${this.forceNextCritical ? 'armed' : 'normal'}  Steps ${this.stepsUntilEncounter}`,
       this.textStyle(12, palette.green),
     );
   }
@@ -573,6 +577,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.playSfx('step');
     this.lockWorldMovement(135);
     this.handleTileStep();
+    this.checkRandomEncounterStep();
     if (this.mode === WORLD) this.renderWorld();
   }
 
@@ -626,7 +631,13 @@ class SteamRpgScene extends Phaser.Scene {
       this.addLog('Pressure Gauge acquired. Clue: heat, pressure, coolant.');
     }
     if (tile === 'E' && !this.enemyCleared) {
-      this.startBattle();
+      this.startBattle({
+        type: 'scripted',
+        rewardItem: 'Aether Fuse',
+        clearTile: 'E',
+        victoryLog: 'Victory. Aether Fuse recovered from the wreckage.',
+        startLog: 'A guard patrol springs from the machinery. ATB continues while menus are open.',
+      });
     }
     if (tile === 'F') {
       if (this.inventory.has('Aether Fuse')) {
@@ -644,6 +655,40 @@ class SteamRpgScene extends Phaser.Scene {
       this.addLog('The western exit is open. The next factory district is not built yet.');
       this.playSfx('success');
     }
+  }
+
+  checkRandomEncounterStep() {
+    if (this.mode !== WORLD || !this.randomEncountersEnabled()) return;
+
+    this.stepsUntilEncounter -= 1;
+    if (this.stepsUntilEncounter > 0) return;
+
+    const encounterId = this.pickRandomEncounterId();
+    this.stepsUntilEncounter = this.rollStepsUntilEncounter();
+    this.startBattle({
+      encounterId,
+      type: 'random',
+      startLog: 'Factory patrol machines close in. ATB continues while menus are open.',
+      victoryLog: 'Victory. The patrol collapses into smoking scrap.',
+    });
+  }
+
+  randomEncountersEnabled() {
+    return worldMap.randomEncounters?.enabled !== false;
+  }
+
+  pickRandomEncounterId() {
+    const encounterIds = worldMap.randomEncounters?.encounters?.length
+      ? worldMap.randomEncounters.encounters
+      : ['factoryAmbush'];
+    return Phaser.Math.RND.pick(encounterIds);
+  }
+
+  rollStepsUntilEncounter() {
+    const settings = worldMap.randomEncounters || {};
+    const min = settings.minSteps ?? 15;
+    const max = settings.maxSteps ?? 30;
+    return Phaser.Math.Between(min, Math.max(min, max));
   }
 
   handleConfirm() {
@@ -813,22 +858,32 @@ class SteamRpgScene extends Phaser.Scene {
     return palette.brass;
   }
 
-  startBattle() {
+  startBattle(options = {}) {
+    const encounterId = options.encounterId || 'factoryAmbush';
+    const encounter = encounters[encounterId] || encounters.factoryAmbush;
+
     this.mode = BATTLE;
     this.inMenu = false;
     this.activeUnitIndex = null;
     this.selectedTargetIndex = 0;
     this.battleResolved = false;
     this.enemyActing = false;
+    this.currentEncounter = {
+      id: encounter.id,
+      type: options.type || 'random',
+      rewardItem: options.rewardItem || null,
+      clearTile: options.clearTile || null,
+      victoryLog: options.victoryLog || 'Victory. The machines fall silent.',
+    };
     this.inventoryOpen = false;
     this.statusMenuOpen = false;
     this.damagePopups = [];
     this.hitEffects = [];
-    this.battleEnemies = createEncounterMobs(encounters.factoryAmbush, mobs);
+    this.battleEnemies = createEncounterMobs(encounter, mobs);
     this.battleEnemies.forEach((enemy) => {
       enemy.intent = chooseAction(enemy);
     });
-    this.addLog('Ambushed by coal-smoke machines. ATB continues while menus are open.');
+    this.addLog(options.startLog || `${encounter.name} begins. ATB continues while menus are open.`);
     this.playSfx('battle');
     this.renderBattle();
   }
@@ -962,17 +1017,22 @@ class SteamRpgScene extends Phaser.Scene {
     }
 
     if (this.battleEnemies.every((unit) => unit.hp <= 0)) {
+      const completedEncounter = this.currentEncounter;
       this.battleResolved = true;
       this.inMenu = false;
       this.activeUnitIndex = null;
       this.clearTransientBattleEffects();
-      this.enemyCleared = true;
       this.clearBattleStatuses();
-      this.addItem('Aether Fuse');
-      this.addLog('Victory. Aether Fuse recovered from the wreckage.');
+      if (completedEncounter?.rewardItem) this.addItem(completedEncounter.rewardItem);
+      if (completedEncounter?.clearTile === 'E') {
+        this.enemyCleared = true;
+        this.replaceWorldTile('E', '.');
+      }
+      this.currentEncounter = null;
+      this.stepsUntilEncounter = this.rollStepsUntilEncounter();
+      this.addLog(completedEncounter?.victoryLog || 'Victory. The machines fall silent.');
       this.playSfx('success');
       this.mode = WORLD;
-      this.replaceWorldTile('E', '.');
       this.renderWorld();
       return;
     }
@@ -1189,6 +1249,7 @@ class SteamRpgScene extends Phaser.Scene {
       westernGateOpen: this.westernGateOpen,
       gateOpen: this.gateOpen,
       enemyCleared: this.enemyCleared,
+      stepsUntilEncounter: this.stepsUntilEncounter,
       gameComplete: this.gameComplete,
       settingsState: this.settingsState,
     };
@@ -1217,6 +1278,10 @@ class SteamRpgScene extends Phaser.Scene {
     this.westernGateOpen = Boolean(state.westernGateOpen || state.valveSolved);
     this.gateOpen = Boolean(state.gateOpen);
     this.enemyCleared = Boolean(state.enemyCleared);
+    const encounterMaxSteps = worldMap.randomEncounters?.maxSteps ?? 30;
+    this.stepsUntilEncounter = Number.isInteger(state.stepsUntilEncounter)
+      ? Phaser.Math.Clamp(state.stepsUntilEncounter, 1, encounterMaxSteps)
+      : this.rollStepsUntilEncounter();
     this.gameComplete = Boolean(state.gameComplete);
     this.settingsState = { ...this.settingsState, ...(state.settingsState || {}) };
     this.party.forEach((unit) => {
