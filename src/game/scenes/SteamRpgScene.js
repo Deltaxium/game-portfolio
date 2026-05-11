@@ -224,15 +224,154 @@ class SteamRpgScene extends Phaser.Scene {
   renderTitle() {
     this.clearScene();
     this.add.rectangle(480, 270, 960, 540, 0x160d0a);
-    this.add.image(480, 150, 'gear').setScale(1.75).setAlpha(0.35);
-    this.add.text(480, 132, 'Boilerbound', this.textStyle(56, palette.amber)).setOrigin(0.5).setFontStyle('700');
-    this.add.text(480, 190, 'A steampunk ATB RPG prototype', this.textStyle(18, palette.cream)).setOrigin(0.5);
-    this.drawPanel(300, 252, 360, 164, 'Main Console');
-    this.add.text(340, 298, 'Enter / Space  Start', this.textStyle(18, palette.cream));
-    this.add.text(340, 330, 'L  Load saved run', this.textStyle(18, palette.cream));
-    this.add.text(340, 362, `M  Sound ${this.settingsState.muted ? 'Off' : 'On'}`, this.textStyle(18, palette.cream));
-    this.add.text(340, 394, `N  Motion ${this.settingsState.reducedMotion ? 'Reduced' : 'Full'}`, this.textStyle(18, palette.cream));
-    this.add.text(318, 442, 'Push to main deploys this build to GitHub Pages and Firebase.', this.textStyle(12, palette.gray));
+    this.drawTitleFactoryBackdrop();
+    this.drawTitleMachineFrame();
+    this.drawTitleGearwork();
+    this.drawTitleSteam();
+    this.drawTitleConsole();
+  }
+
+  drawTitleFactoryBackdrop() {
+    this.add.rectangle(480, 424, 960, 232, 0x21140f);
+    this.add.rectangle(480, 402, 960, 4, palette.copper, 0.75);
+
+    const smokestacks = [
+      { x: 92, w: 42, h: 236 },
+      { x: 162, w: 34, h: 186 },
+      { x: 772, w: 46, h: 224 },
+      { x: 842, w: 32, h: 166 },
+    ];
+    smokestacks.forEach(({ x, w, h }) => {
+      this.add.rectangle(x, 404 - h / 2, w, h, 0x271812).setStrokeStyle(2, 0x4b2a18);
+      this.add.rectangle(x, 404 - h, w + 12, 12, palette.copper, 0.82).setStrokeStyle(1, palette.brass);
+      this.add.rectangle(x, 402, w + 18, 12, 0x120d0a, 0.75);
+    });
+
+    for (let x = 230; x <= 690; x += 92) {
+      this.add.rectangle(x, 316, 54, 178, 0x2a1912).setStrokeStyle(2, 0x53341f);
+      this.add.rectangle(x, 244, 34, 26, 0x3b2419).setStrokeStyle(1, palette.copper);
+      this.add.rectangle(x, 346, 32, 68, 0x130c09, 0.85).setStrokeStyle(1, palette.smoke);
+      this.add.line(x, 346, -12, -24, 12, 24, palette.copper, 0.55).setLineWidth(2);
+      this.add.line(x, 346, 12, -24, -12, 24, palette.copper, 0.55).setLineWidth(2);
+    }
+
+    for (let x = 30; x < 940; x += 48) {
+      this.add.line(x, 410, -34, 92, 34, 92, 0x3b2419, 0.55).setLineWidth(2);
+    }
+  }
+
+  drawTitleMachineFrame() {
+    this.add.rectangle(480, 268, 830, 408, 0x0f0907, 0.24).setStrokeStyle(3, palette.brass);
+    this.add.rectangle(480, 268, 806, 384, 0x000000, 0).setStrokeStyle(2, palette.copper);
+    this.add.rectangle(480, 74, 778, 8, palette.brass, 0.9);
+    this.add.rectangle(480, 460, 778, 8, palette.brass, 0.9);
+
+    for (const x of [92, 868]) {
+      this.add.rectangle(x, 268, 22, 384, 0x241914, 0.9).setStrokeStyle(2, palette.copper);
+      for (let y = 98; y <= 438; y += 42) {
+        this.add.circle(x, y, 5, palette.brass, 0.95).setStrokeStyle(1, palette.coal);
+      }
+    }
+
+    this.add.line(480, 92, -350, 0, 350, 0, palette.copper, 0.55).setLineWidth(3);
+    this.add.line(480, 444, -350, 0, 350, 0, palette.copper, 0.55).setLineWidth(3);
+  }
+
+  drawTitleGearwork() {
+    const gears = [
+      { x: 218, y: 148, scale: 1.48, duration: 12000, reverse: false },
+      { x: 742, y: 142, scale: 1.28, duration: 9000, reverse: true },
+      { x: 182, y: 366, scale: 0.92, duration: 8200, reverse: true },
+      { x: 802, y: 366, scale: 0.98, duration: 7600, reverse: false },
+    ];
+
+    gears.forEach((gear) => {
+      const image = this.add.image(gear.x, gear.y, 'gear').setScale(gear.scale).setAlpha(0.78);
+      if (!this.settingsState.reducedMotion) {
+        this.tweens.add({
+          targets: image,
+          angle: gear.reverse ? -360 : 360,
+          duration: gear.duration,
+          repeat: -1,
+        });
+      }
+    });
+
+    this.add.text(480, 120, 'BOILERBOUND', this.textStyle(58, palette.amber)).setOrigin(0.5).setFontStyle('700');
+    this.add.text(480, 168, 'A STEAMPUNK ATB RPG PROTOTYPE', this.textStyle(15, palette.cream)).setOrigin(0.5).setFontStyle('700');
+    this.add.rectangle(480, 199, 384, 5, palette.copper, 0.85);
+    this.add.rectangle(480, 207, 256, 3, palette.brass, 0.85);
+  }
+
+  drawTitleSteam() {
+    const vents = [
+      { x: 128, y: 154 },
+      { x: 812, y: 164 },
+      { x: 318, y: 272 },
+      { x: 650, y: 278 },
+    ];
+    vents.forEach(({ x, y }, index) => {
+      for (let i = 0; i < 3; i += 1) {
+        const puff = this.add.circle(x + i * 15, y - i * 12, 16 - i * 3, palette.cream, 0.12 + i * 0.03);
+        if (!this.settingsState.reducedMotion) {
+          this.tweens.add({
+            targets: puff,
+            y: puff.y - 26,
+            alpha: 0.02,
+            scale: 1.25,
+            duration: 1800 + index * 180 + i * 120,
+            yoyo: true,
+            repeat: -1,
+          });
+        }
+      }
+    });
+  }
+
+  drawTitleConsole() {
+    this.drawPanel(286, 238, 388, 188, 'Ignition Console');
+    this.add.rectangle(480, 282, 324, 38, 0x160d0a, 0.92).setStrokeStyle(1, palette.brass);
+    this.add.text(318, 270, 'Enter / Space', this.textStyle(18, palette.amber)).setFontStyle('700');
+    this.add.text(520, 270, 'Start', this.textStyle(18, palette.cream)).setFontStyle('700');
+
+    const options = [
+      ['L', 'Load saved run'],
+      ['M', `Sound ${this.settingsState.muted ? 'Off' : 'On'}`],
+      ['N', `Motion ${this.settingsState.reducedMotion ? 'Reduced' : 'Full'}`],
+    ];
+    options.forEach(([key, label], index) => {
+      const y = 322 + index * 30;
+      this.add.circle(324, y + 7, 10, 0x1b110d).setStrokeStyle(2, palette.copper);
+      this.add.text(320, y - 1, key, this.textStyle(11, palette.amber)).setFontStyle('700');
+      this.add.text(348, y, label, this.textStyle(15, palette.cream));
+    });
+
+    this.drawTitleGauge(642, 292, 'PRESSURE', palette.red);
+    this.drawTitleGauge(704, 360, 'AETHER', palette.blue);
+    this.add.line(326, 432, -60, 0, 60, 0, palette.copper, 0.78).setLineWidth(4);
+    this.add.line(634, 432, -60, 0, 60, 0, palette.copper, 0.78).setLineWidth(4);
+    this.add.text(480, 476, 'Push to main deploys this build to GitHub Pages and Firebase.', this.textStyle(12, palette.gray)).setOrigin(0.5);
+  }
+
+  drawTitleGauge(x, y, label, needleColor) {
+    this.add.circle(x, y, 28, 0x1b110d).setStrokeStyle(3, palette.brass);
+    this.add.circle(x, y, 21, palette.cream, 0.9).setStrokeStyle(1, palette.copper);
+    for (let i = 0; i < 5; i += 1) {
+      const angle = Phaser.Math.DegToRad(205 + i * 32);
+      this.add.line(
+        x + Math.cos(angle) * 17,
+        y + Math.sin(angle) * 17,
+        0,
+        0,
+        Math.cos(angle) * 5,
+        Math.sin(angle) * 5,
+        palette.coal,
+        0.75,
+      ).setLineWidth(1);
+    }
+    this.add.line(x, y, 0, 0, 12, -9, needleColor).setLineWidth(3);
+    this.add.circle(x, y, 4, palette.coal).setStrokeStyle(1, palette.brass);
+    this.add.text(x, y + 38, label, this.textStyle(9, palette.amber)).setOrigin(0.5).setFontStyle('700');
   }
 
   renderWorld() {
