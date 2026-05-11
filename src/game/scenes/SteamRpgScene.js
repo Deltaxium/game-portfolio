@@ -283,6 +283,9 @@ class SteamRpgScene extends Phaser.Scene {
     if (tile === 'G' && !this.gateOpen) {
       this.drawPressureGate(px, py);
     }
+    if (tile === 'X') {
+      this.drawAreaExit(px, py);
+    }
     if (tile === 'E' && !this.enemyCleared) {
       this.drawEnemyStation(px, py);
     }
@@ -351,6 +354,18 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.circle(px + 17, py + 17, 5, palette.coal).setStrokeStyle(2, palette.brass);
   }
 
+  drawAreaExit(px, py) {
+    const unlocked = this.valveSolved;
+    this.add.rectangle(px + 17, py + 17, 31, 31, unlocked ? 0x21313a : palette.iron).setStrokeStyle(2, unlocked ? palette.green : palette.red);
+    this.add.rectangle(px + 6, py + 17, 6, 25, palette.copper, 0.86);
+    this.add.rectangle(px + 28, py + 17, 6, 25, palette.copper, 0.86);
+    this.add.line(px + 17, py + 17, -8, -9, 8, 0, unlocked ? palette.green : palette.amber).setLineWidth(3);
+    this.add.line(px + 17, py + 17, -8, 9, 8, 0, unlocked ? palette.green : palette.amber).setLineWidth(3);
+    if (!unlocked) {
+      this.add.circle(px + 17, py + 17, 5, palette.red).setStrokeStyle(2, palette.amber);
+    }
+  }
+
   drawEnemyStation(px, py) {
     this.add.rectangle(px + 17, py + 25, 28, 8, 0x130c09, 0.6);
     this.add.image(px + 17, py + 16, 'enemy').setScale(0.55).setTint(palette.copper);
@@ -390,6 +405,7 @@ class SteamRpgScene extends Phaser.Scene {
       ['Key', this.inventory.has('Brass Key')],
       ['Gauge', this.inventory.has('Pressure Gauge')],
       ['Valve', this.valveSolved],
+      ['Exit', this.valveSolved],
       ['Fuse', this.inventory.has('Aether Fuse')],
       ['Lift', this.gameComplete],
     ];
@@ -524,6 +540,13 @@ class SteamRpgScene extends Phaser.Scene {
       return false;
     }
 
+    if (tile === 'X' && !this.valveSolved) {
+      this.addLog('The western loading door is pressure-locked. Tune the valve first.');
+      this.playSfx('error');
+      this.renderWorld();
+      return false;
+    }
+
     return true;
   }
 
@@ -551,6 +574,10 @@ class SteamRpgScene extends Phaser.Scene {
     }
     if (tile === 'P') {
       this.addLog('Blueprint note: recover key, read gauge, tune valve, win fuse.');
+    }
+    if (tile === 'X') {
+      this.addLog('The western exit is open. The next factory district is not built yet.');
+      this.playSfx('success');
     }
   }
 
@@ -689,7 +716,7 @@ class SteamRpgScene extends Phaser.Scene {
 
     this.valveSolved = true;
     this.gateOpen = true;
-    this.addLog('Valve sequence complete. Eastern gate unlocked.');
+    this.addLog('Valve sequence complete. Western exit pressure-lock released.');
     this.playSfx('success');
     this.renderWorld();
   }
