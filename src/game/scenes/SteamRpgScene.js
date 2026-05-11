@@ -509,7 +509,14 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.line(px + 17, py + 24, -11, 0, 11, 0, palette.smoke, 0.9).setLineWidth(2);
     for (let i = 0; i < 3; i += 1) {
       const offset = (i * 8 + (x + y) * 2) % 24;
-      this.add.line(px + 8 + offset, py + 17, -3, -4, 3, 4, palette.brass, 0.8).setLineWidth(2);
+      const slat = this.add.line(px + 8 + offset, py + 17, -3, -4, 3, 4, palette.brass, 0.8).setLineWidth(2);
+      this.addLoopTween(slat, {
+        x: slat.x + 8,
+        alpha: 0.38,
+        duration: 720,
+        delay: i * 90,
+        yoyo: true,
+      });
     }
   }
 
@@ -519,13 +526,30 @@ class SteamRpgScene extends Phaser.Scene {
       this.add.line(px + 8 + i * 6, py + 18, 0, -6, 0, 6, palette.copper, 0.7).setLineWidth(1);
     }
     const steamAlpha = 0.25 + ((x + y) % 3) * 0.08;
-    this.add.circle(px + 12, py + 9, 5, palette.cream, steamAlpha);
-    this.add.circle(px + 21, py + 7, 4, palette.cream, steamAlpha * 0.8);
+    const puffs = [
+      this.add.circle(px + 12, py + 9, 5, palette.cream, steamAlpha),
+      this.add.circle(px + 21, py + 7, 4, palette.cream, steamAlpha * 0.8),
+    ];
+    puffs.forEach((puff, index) => {
+      this.addLoopTween(puff, {
+        y: puff.y - 8,
+        alpha: 0.05,
+        scale: 1.3,
+        duration: 1200 + index * 180,
+        delay: (x + y + index) * 70,
+        yoyo: true,
+      });
+    });
   }
 
   drawPipeRunTile(px, py, x, y) {
     this.add.line(px + 17, py + 16, -15, 0, 15, 0, palette.copper, 0.95).setLineWidth(5);
-    this.add.line(px + 17, py + 20, -15, 0, 15, 0, palette.brass, 0.65).setLineWidth(2);
+    const pressureLine = this.add.line(px + 17, py + 20, -15, 0, 15, 0, palette.brass, 0.65).setLineWidth(2);
+    this.addLoopTween(pressureLine, {
+      alpha: 0.18,
+      duration: 900 + ((x + y) % 3) * 120,
+      yoyo: true,
+    });
     if ((x + y) % 2 === 0) {
       this.add.circle(px + 17, py + 17, 5, palette.iron).setStrokeStyle(1, palette.brass);
     }
@@ -542,7 +566,13 @@ class SteamRpgScene extends Phaser.Scene {
   drawBoilerTankTile(px, py, x, y) {
     this.add.rectangle(px + 17, py + 17, 27, 25, 0x38231a, 0.96).setStrokeStyle(2, palette.copper);
     this.add.circle(px + 17, py + 17, 9, palette.iron, 0.9).setStrokeStyle(2, palette.brass);
-    this.add.line(px + 17, py + 17, 0, 0, x % 2 === y % 2 ? 6 : -6, -4, palette.red).setLineWidth(2);
+    const needle = this.add.line(px + 17, py + 17, 0, 0, x % 2 === y % 2 ? 6 : -6, -4, palette.red).setLineWidth(2);
+    this.addLoopTween(needle, {
+      angle: x % 2 === y % 2 ? 12 : -12,
+      duration: 1150,
+      delay: x * 60,
+      yoyo: true,
+    });
     this.add.circle(px + 7, py + 7, 2, palette.brass, 0.9);
     this.add.circle(px + 27, py + 27, 2, palette.brass, 0.75);
   }
@@ -567,7 +597,13 @@ class SteamRpgScene extends Phaser.Scene {
     drawValveMarker(this, px + 17, py + 17, this.valveSolved);
     if (!this.valveSolved) {
       const color = this.getValveColorValue(valveSequence[this.selectedValveIndex]);
-      this.add.circle(px + 28, py + 7, 4, color).setStrokeStyle(1, palette.cream);
+      const selector = this.add.circle(px + 28, py + 7, 4, color).setStrokeStyle(1, palette.cream);
+      this.addLoopTween(selector, {
+        scale: 1.55,
+        alpha: 0.55,
+        duration: 620,
+        yoyo: true,
+      });
     }
   }
 
@@ -589,6 +625,14 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.line(px + 17, py + 17, -8, 9, 8, 0, unlocked ? palette.green : palette.amber).setLineWidth(3);
     if (!unlocked) {
       this.add.circle(px + 17, py + 17, 5, palette.red).setStrokeStyle(2, palette.amber);
+    } else {
+      const glow = this.add.circle(px + 17, py + 17, 9, palette.green, 0.16);
+      this.addLoopTween(glow, {
+        scale: 1.65,
+        alpha: 0.03,
+        duration: 1200,
+        yoyo: true,
+      });
     }
   }
 
@@ -601,7 +645,15 @@ class SteamRpgScene extends Phaser.Scene {
   drawLiftSocket(px, py) {
     const active = this.inventory.has('Aether Fuse');
     this.add.rectangle(px + 17, py + 17, 28, 28, active ? 0x284222 : palette.iron).setStrokeStyle(2, palette.amber);
-    this.add.rectangle(px + 17, py + 17, 16, 16, active ? palette.green : palette.gray);
+    const core = this.add.rectangle(px + 17, py + 17, 16, 16, active ? palette.green : palette.gray);
+    if (active) {
+      this.addLoopTween(core, {
+        alpha: 0.35,
+        scale: 1.18,
+        duration: 820,
+        yoyo: true,
+      });
+    }
     this.add.line(px + 17, py + 17, -12, -12, 12, 12, palette.copper, 0.75).setLineWidth(2);
     this.add.line(px + 17, py + 17, -12, 12, 12, -12, palette.copper, 0.75).setLineWidth(2);
   }
@@ -625,7 +677,13 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.rectangle(px + 8, py + 17, 7, 25, palette.copper, 0.86);
     this.add.rectangle(px + 26, py + 17, 7, 25, palette.copper, 0.86);
     this.add.rectangle(px + 17, py + 17, 14, 25, 0x1b110d, 0.74).setStrokeStyle(1, palette.brass);
-    this.add.circle(px + 22, py + 18, 2, palette.amber, 0.95);
+    const lamp = this.add.circle(px + 22, py + 18, 2, palette.amber, 0.95);
+    this.addLoopTween(lamp, {
+      alpha: 0.32,
+      scale: 1.8,
+      duration: 760,
+      yoyo: true,
+    });
   }
 
   drawBedStation(px, py) {
@@ -1756,7 +1814,17 @@ class SteamRpgScene extends Phaser.Scene {
     playSfx(this, type);
   }
 
+  addLoopTween(targets, config) {
+    if (this.settingsState.reducedMotion) return;
+    this.tweens.add({
+      targets,
+      repeat: -1,
+      ...config,
+    });
+  }
+
   clearScene() {
+    this.tweens.killAll();
     [...this.children.getChildren()].forEach((child) => child.destroy());
   }
 }
