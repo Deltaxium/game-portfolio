@@ -86,6 +86,10 @@ class SteamRpgScene extends Phaser.Scene {
     this.latestRestPoint = null;
     this.damagePopups = [];
     this.hitEffects = [];
+    this.worldMapBuilt = false;
+    this.worldMapBuildKey = '';
+    this.worldHudObjects = [];
+    this.playerSprite = null;
     this.devToolsOpen = false;
     this.forceNextCritical = false;
 
@@ -383,17 +387,71 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.text(x, y + 38, label, this.textStyle(9, palette.amber)).setOrigin(0.5).setFontStyle('700');
   }
 
-  renderWorld() {
-    this.clearScene();
-    this.add.rectangle(480, 270, 960, 540, 0x21140f);
-    this.drawWorldFrame();
-    this.drawMap();
-    this.drawMapHeader();
-    this.drawSidebar();
-    this.drawMessagePanel();
-    if (this.inventoryOpen) this.drawInventoryOverlay();
-    if (this.statusMenuOpen) this.drawStatusReferenceOverlay();
-    if (this.devToolsOpen) this.drawDevTools();
+  renderWorld(options = {}) {
+    const mapBuildKey = [
+      this.currentMapId,
+      this.enemyCleared ? 'enemy-cleared' : 'enemy-active',
+      this.inventory.has('Brass Key') ? 'key-owned' : 'key-map',
+      this.inventory.has('Pressure Gauge') ? 'gauge-owned' : 'gauge-map',
+      this.inventory.has('Aether Fuse') ? 'fuse-owned' : 'fuse-map',
+      this.valveSolved ? 'valve-solved' : `valve-${this.selectedValveIndex}-${this.valveInput.length}`,
+      this.gateOpen ? 'gate-open' : 'gate-closed',
+      this.westernGateOpen ? 'west-open' : 'west-closed',
+      this.settingsState.reducedMotion ? 'reduced-motion' : 'full-motion',
+    ].join('|');
+    const rebuildMap = options.rebuildMap || !this.worldMapBuilt || this.worldMapBuildKey !== mapBuildKey;
+
+    if (rebuildMap) {
+      this.clearScene();
+      this.add.rectangle(480, 270, 960, 540, 0x21140f);
+      this.drawWorldFrame();
+      this.drawMap();
+      this.drawMapHeader();
+      this.playerSprite = this.add.image(0, 0, 'hero');
+      this.worldMapBuilt = true;
+      this.worldMapBuildKey = mapBuildKey;
+    }
+
+    this.updateWorldPlayerSprite();
+    this.redrawWorldHud();
+  }
+
+  redrawWorldHud() {
+    this.worldHudObjects.forEach((object) => object.destroy());
+    this.worldHudObjects = this.captureNewObjects(() => {
+      this.drawSidebar();
+      this.drawMessagePanel();
+      if (this.inventoryOpen) this.drawInventoryOverlay();
+      if (this.statusMenuOpen) this.drawStatusReferenceOverlay();
+      if (this.devToolsOpen) this.drawDevTools();
+    });
+  }
+
+  captureNewObjects(callback) {
+    const before = new Set(this.children.getChildren());
+    callback();
+    return this.children.getChildren().filter((child) => !before.has(child));
+  }
+
+  updateWorldPlayerSprite() {
+    if (!this.playerSprite) return;
+    this.playerSprite.setPosition(
+      MAP_X + this.player.x * TILE + TILE / 2,
+      MAP_Y + this.player.y * TILE + TILE / 2,
+    );
+  }
+
+  invalidateWorldMap() {
+    this.worldMapBuilt = false;
+    this.worldMapBuildKey = '';
+  }
+
+  refreshWorldHud() {
+    if (this.mode === WORLD && this.worldMapBuilt) this.redrawWorldHud();
+  }
+
+  renderWorldAfterMovement() {
+    this.renderWorld();
   }
 
   drawWorldFrame() {
@@ -415,7 +473,6 @@ class SteamRpgScene extends Phaser.Scene {
       }
     }
 
-    this.add.image(MAP_X + this.player.x * TILE + TILE / 2, MAP_Y + this.player.y * TILE + TILE / 2, 'hero');
   }
 
   drawTile(x, y) {
@@ -815,7 +872,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.lockWorldMovement(135);
     this.handleTileStep();
     this.checkRandomEncounterStep();
-    if (this.mode === WORLD) this.renderWorld();
+    if (this.mode === WORLD) this.renderWorldAfterMovement();
   }
 
   lockWorldMovement(duration) {
@@ -1826,6 +1883,10 @@ class SteamRpgScene extends Phaser.Scene {
   clearScene() {
     this.tweens.killAll();
     [...this.children.getChildren()].forEach((child) => child.destroy());
+    this.worldHudObjects = [];
+    this.playerSprite = null;
+    this.worldMapBuilt = false;
+    this.worldMapBuildKey = '';
   }
 }
 
