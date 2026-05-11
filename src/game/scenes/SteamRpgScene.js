@@ -70,7 +70,9 @@ class SteamRpgScene extends Phaser.Scene {
     this.statusMenuOpen = false;
     this.seenStatusPrompts = new Set();
     this.valveInput = [];
+    this.selectedValveIndex = 0;
     this.valveSolved = false;
+    this.westernGateOpen = false;
     this.gateOpen = false;
     this.enemyCleared = false;
     this.gameComplete = false;
@@ -343,6 +345,10 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.line(px + 17, py + 17, -17, 0, 17, 0, palette.copper, 0.75).setLineWidth(4);
     this.add.line(px + 17, py + 17, 0, -17, 0, 17, palette.copper, 0.75).setLineWidth(4);
     drawValveMarker(this, px + 17, py + 17, this.valveSolved);
+    if (!this.valveSolved) {
+      const color = this.getValveColorValue(valveSequence[this.selectedValveIndex]);
+      this.add.circle(px + 28, py + 7, 4, color).setStrokeStyle(1, palette.cream);
+    }
   }
 
   drawPressureGate(px, py) {
@@ -355,7 +361,7 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   drawAreaExit(px, py) {
-    const unlocked = this.valveSolved;
+    const unlocked = this.westernGateOpen;
     this.add.rectangle(px + 17, py + 17, 31, 31, unlocked ? 0x21313a : palette.iron).setStrokeStyle(2, unlocked ? palette.green : palette.red);
     this.add.rectangle(px + 6, py + 17, 6, 25, palette.copper, 0.86);
     this.add.rectangle(px + 28, py + 17, 6, 25, palette.copper, 0.86);
@@ -405,7 +411,7 @@ class SteamRpgScene extends Phaser.Scene {
       ['Key', this.inventory.has('Brass Key')],
       ['Gauge', this.inventory.has('Pressure Gauge')],
       ['Valve', this.valveSolved],
-      ['Exit', this.valveSolved],
+      ['West Gate', this.westernGateOpen],
       ['Fuse', this.inventory.has('Aether Fuse')],
       ['Lift', this.gameComplete],
     ];
@@ -540,7 +546,7 @@ class SteamRpgScene extends Phaser.Scene {
       return false;
     }
 
-    if (tile === 'X' && !this.valveSolved) {
+    if (tile === 'X' && !this.westernGateOpen) {
       this.addLog('The western loading door is pressure-locked. Tune the valve first.');
       this.playSfx('error');
       this.renderWorld();
@@ -558,7 +564,7 @@ class SteamRpgScene extends Phaser.Scene {
     }
     if (tile === 'S' && !this.inventory.has('Pressure Gauge')) {
       this.addItem('Pressure Gauge');
-      this.addLog('Pressure Gauge acquired. Valve order: red, amber, blue.');
+      this.addLog('Pressure Gauge acquired. Clue: heat, pressure, coolant.');
     }
     if (tile === 'E' && !this.enemyCleared) {
       this.startBattle();
@@ -704,21 +710,48 @@ class SteamRpgScene extends Phaser.Scene {
       return;
     }
 
-    const nextColor = valveSequence[this.valveInput.length];
-    this.valveInput.push(nextColor);
+    const selectedColor = valveSequence[this.selectedValveIndex];
+    const expectedColor = valveSequence[this.valveInput.length];
+
+    if (selectedColor !== expectedColor) {
+      this.valveInput = [];
+      this.addLog(`Valve rejects ${selectedColor}. Sequence reset. Read the gauge clue.`);
+      this.playSfx('error');
+      this.renderWorld();
+      return;
+    }
+
+    this.valveInput.push(selectedColor);
     this.playSfx('valve');
 
     if (this.valveInput.length < valveSequence.length) {
-      this.addLog(`Valve set to ${nextColor}. Continue the sequence.`);
+      this.addLog(`Valve set to ${selectedColor}. Choose the next dial color with Left/Right.`);
       this.renderWorld();
       return;
     }
 
     this.valveSolved = true;
+    this.westernGateOpen = true;
     this.gateOpen = true;
     this.addLog('Valve sequence complete. Western exit pressure-lock released.');
     this.playSfx('success');
     this.renderWorld();
+  }
+
+  adjustValveChoice(direction) {
+    if (this.mode !== WORLD || this.worldTiles[this.player.y][this.player.x] !== 'V' || this.valveSolved) return false;
+    this.selectedValveIndex = Phaser.Math.Wrap(this.selectedValveIndex + direction, 0, valveSequence.length);
+    this.addLog(`Valve dial selected: ${valveSequence[this.selectedValveIndex]}.`);
+    this.playSfx('menu');
+    this.renderWorld();
+    return true;
+  }
+
+  getValveColorValue(color) {
+    if (color === 'red') return palette.red;
+    if (color === 'amber') return palette.amber;
+    if (color === 'blue') return palette.blue;
+    return palette.brass;
   }
 
   startBattle() {
@@ -921,6 +954,7 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   moveTarget(direction) {
+    if (this.adjustValveChoice(direction)) return;
     if (!this.inMenu || this.activeUnitIndex === null) return;
     const command = this.getCommandOptions(this.party[this.activeUnitIndex])[this.selectedCommand];
     if (command.target !== 'enemy') return;
@@ -1093,6 +1127,7 @@ class SteamRpgScene extends Phaser.Scene {
       player: this.player,
       valveInput: this.valveInput,
       valveSolved: this.valveSolved,
+      westernGateOpen: this.westernGateOpen,
       gateOpen: this.gateOpen,
       enemyCleared: this.enemyCleared,
       gameComplete: this.gameComplete,
@@ -1120,6 +1155,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.player = state.player || this.player;
     this.valveInput = state.valveInput || [];
     this.valveSolved = Boolean(state.valveSolved);
+    this.westernGateOpen = Boolean(state.westernGateOpen || state.valveSolved);
     this.gateOpen = Boolean(state.gateOpen);
     this.enemyCleared = Boolean(state.enemyCleared);
     this.gameComplete = Boolean(state.gameComplete);
@@ -1263,8 +1299,9 @@ class SteamRpgScene extends Phaser.Scene {
     if (!this.devToolsOpen) return;
     this.valveInput = [...valveSequence];
     this.valveSolved = true;
+    this.westernGateOpen = true;
     this.gateOpen = true;
-    this.addLog('Dev: valve solved and gate opened.');
+    this.addLog('Dev: valve solved and western gate opened.');
     this.playSfx('success');
     if (this.mode === WORLD) this.renderWorld();
   }
