@@ -628,6 +628,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.enemyActing = false;
     this.inventoryOpen = false;
     this.statusMenuOpen = false;
+    this.damagePopups = [];
+    this.hitEffects = [];
     this.battleEnemies = createEncounterMobs(encounters.factoryAmbush, mobs);
     this.battleEnemies.forEach((enemy) => {
       enemy.intent = chooseAction(enemy);
@@ -644,9 +646,9 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.rectangle(480, 366, 930, 8, palette.copper);
 
     this.drawBattleActors();
-    this.drawDamagePopups();
     this.drawBattleHud();
     if (this.devToolsOpen) this.drawDevTools();
+    this.flushDamagePopups();
   }
 
   drawBattleActors() {
@@ -759,6 +761,7 @@ class SteamRpgScene extends Phaser.Scene {
       this.battleResolved = true;
       this.inMenu = false;
       this.activeUnitIndex = null;
+      this.clearTransientBattleEffects();
       this.addLog('The boilers go cold. Refresh to retry.');
       this.renderBattle();
       return;
@@ -768,6 +771,7 @@ class SteamRpgScene extends Phaser.Scene {
       this.battleResolved = true;
       this.inMenu = false;
       this.activeUnitIndex = null;
+      this.clearTransientBattleEffects();
       this.enemyCleared = true;
       this.clearBattleStatuses();
       this.addItem('Aether Fuse');
@@ -803,10 +807,7 @@ class SteamRpgScene extends Phaser.Scene {
       return;
     }
 
-    if (time - this.lastBattleRender > 500) {
-      this.lastBattleRender = time;
-      this.renderBattle();
-    }
+    this.lastBattleRender = time;
   }
 
   moveMenu(direction) {
@@ -1055,42 +1056,57 @@ class SteamRpgScene extends Phaser.Scene {
 
   spawnDamageNumber(x, y, amount, critical, type) {
     this.damagePopups.push({
-      id: `${Date.now()}-${Math.random()}`,
       x,
       y,
       amount,
       critical,
       type,
-      createdAt: this.time.now,
     });
   }
 
-  drawDamagePopups() {
-    const now = this.time.now;
-    this.damagePopups = this.damagePopups.filter((popup) => now - popup.createdAt < 900);
-    this.damagePopups.forEach((popup) => {
-      const age = now - popup.createdAt;
-      const progress = age / 900;
-      const shake = popup.critical ? Math.sin(age / 24) * 8 : 0;
+  flushDamagePopups() {
+    const popups = this.damagePopups;
+    this.damagePopups = [];
+
+    popups.forEach((popup) => {
       const text = popup.type === 'heal' ? `+${popup.amount}` : popup.critical ? `${popup.amount}!` : `${popup.amount}`;
       const color = popup.critical ? palette.amber : popup.type === 'heal' ? palette.green : palette.red;
       const damageText = this.add.text(
-        popup.x + shake,
-        popup.y - progress * 42,
+        popup.x,
+        popup.y,
         text,
         this.textStyle(popup.critical ? 28 : 22, color),
       )
         .setOrigin(0.5)
-        .setFontStyle('700')
-        .setAlpha(1 - progress);
+        .setFontStyle('700');
 
       damageText.setStroke('#180c08', popup.critical ? 6 : 4);
+      this.tweens.add({
+        targets: damageText,
+        alpha: 0,
+        y: popup.y - 42,
+        x: popup.critical ? popup.x + 10 : popup.x,
+        duration: 780,
+        ease: popup.critical ? 'Sine.easeInOut' : 'Quad.easeOut',
+        yoyo: false,
+        onUpdate: popup.critical
+          ? () => {
+              damageText.x = popup.x + Math.sin(this.time.now / 22) * 7;
+            }
+          : undefined,
+        onComplete: () => damageText.destroy(),
+      });
     });
   }
 
   spawnHitEffect(unitId) {
     if (this.settingsState.reducedMotion) return;
     this.hitEffects.push({ unitId, createdAt: this.time.now });
+  }
+
+  clearTransientBattleEffects() {
+    this.damagePopups = [];
+    this.hitEffects = [];
   }
 
   getHitEffect(unitId) {

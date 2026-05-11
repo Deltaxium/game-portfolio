@@ -12,11 +12,24 @@ const sfx = {
   error: [80, 0.09, 'square', 0.035],
 };
 
+const sfxCooldowns = {
+  error: 420,
+  menu: 70,
+  step: 90,
+  ready: 120,
+};
+
 export function playSfx(scene, type) {
   if (scene.settingsState?.muted) return;
   const audioContext = scene.sound?.context;
   const settings = sfx[type];
-  if (!audioContext || !settings) return;
+  if (!audioContext || audioContext.state === 'closed' || !settings) return;
+
+  scene.sfxLastPlayed ??= {};
+  const now = scene.time?.now ?? performance.now();
+  const cooldown = sfxCooldowns[type] || 0;
+  if (cooldown && now - (scene.sfxLastPlayed[type] || 0) < cooldown) return;
+  scene.sfxLastPlayed[type] = now;
 
   const [frequency, duration, wave, gainValue] = settings;
   const oscillator = audioContext.createOscillator();
