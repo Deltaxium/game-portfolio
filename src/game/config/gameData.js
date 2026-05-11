@@ -77,7 +77,21 @@ export const worldTiles = [
   '#r.#.#####.####.#..#',
   '#r...#...#....#....#',
   '#rrr...#...##...F..#',
-  '#..P...#....~~.....#',
+  '#..P.D.#....~~.....#',
+  '####################',
+];
+
+export const restRoomTiles = [
+  '####################',
+  '#......pp..........#',
+  '#..####....####....#',
+  '#..#..........#....#',
+  '#..#....B.....#....#',
+  '#..#..........#....#',
+  '#..####....####....#',
+  '#.......~~.........#',
+  '#..................#',
+  '#....U.............#',
   '####################',
 ];
 
@@ -89,6 +103,25 @@ export const worldMap = {
     minSteps: 15,
     maxSteps: 30,
     encounters: ['factoryAmbush'],
+  },
+};
+
+export const restRoomMap = {
+  id: 'restRoom',
+  name: 'Boilerhouse Rest Room',
+  randomEncounters: {
+    enabled: false,
+  },
+};
+
+export const worldMaps = {
+  [worldMap.id]: {
+    ...worldMap,
+    tiles: worldTiles,
+  },
+  [restRoomMap.id]: {
+    ...restRoomMap,
+    tiles: restRoomTiles,
   },
 };
 

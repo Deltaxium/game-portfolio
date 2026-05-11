@@ -16,7 +16,7 @@ import {
   devTools,
   valveSequence,
   worldMap,
-  worldTiles,
+  worldMaps,
 } from '../config/gameData.js';
 import { encounters } from '../content/encounters.js';
 import { mobs } from '../content/mobs/index.js';
@@ -205,7 +205,12 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   createWorld() {
-    this.worldTiles = [...worldTiles];
+    this.mapTilesById = Object.fromEntries(
+      Object.entries(worldMaps).map(([mapId, map]) => [mapId, [...map.tiles]]),
+    );
+    this.currentMapId = worldMap.id;
+    this.currentMap = worldMaps[this.currentMapId];
+    this.worldTiles = this.mapTilesById[this.currentMapId];
     this.player = { x: 5, y: 9 };
     this.stepsUntilEncounter = this.rollStepsUntilEncounter();
   }
@@ -395,8 +400,8 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   drawMapHeader() {
-    this.add.rectangle(143, 32, 156, 24, palette.panel, 0.96).setStrokeStyle(1, palette.copper);
-    this.add.text(78, 23, worldMap.name, this.textStyle(14, palette.amber)).setFontStyle('700');
+    this.add.rectangle(164, 32, 198, 24, palette.panel, 0.96).setStrokeStyle(1, palette.copper);
+    this.add.text(78, 23, this.currentMap.name, this.textStyle(14, palette.amber)).setFontStyle('700');
   }
 
   drawMap() {
@@ -439,6 +444,12 @@ class SteamRpgScene extends Phaser.Scene {
     }
     if (tile === 'P') {
       this.drawBlueprintStation(px, py);
+    }
+    if (tile === 'D' || tile === 'U') {
+      this.drawMapTransitionTile(px, py, tile);
+    }
+    if (tile === 'B') {
+      this.drawBedStation(px, py);
     }
     if (tile === '=') {
       this.drawConveyorTile(px, py, x, y);
@@ -593,6 +604,20 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.line(px + 17, py + 15, -7, -4, 7, -4, palette.cream, 0.8).setLineWidth(1);
     this.add.line(px + 17, py + 20, -7, 0, 7, 0, palette.cream, 0.8).setLineWidth(1);
     this.add.text(px + 13, py + 20, '?', this.textStyle(14, palette.amber)).setFontStyle('700');
+  }
+
+  drawMapTransitionTile(px, py, tile) {
+    const direction = tile === 'D' ? 'S' : 'N';
+    this.add.rectangle(px + 17, py + 17, 28, 28, 0x1b110d, 0.92).setStrokeStyle(2, palette.brass);
+    this.add.rectangle(px + 17, py + 17, 18, 18, 0x21313a, 0.84).setStrokeStyle(1, palette.copper);
+    this.add.text(px + 12, py + 8, direction, this.textStyle(15, palette.amber)).setFontStyle('700');
+  }
+
+  drawBedStation(px, py) {
+    this.add.rectangle(px + 17, py + 18, 29, 21, 0x1b110d, 0.94).setStrokeStyle(2, palette.brass);
+    this.add.rectangle(px + 17, py + 21, 22, 12, 0x5b2f25, 0.95).setStrokeStyle(1, palette.copper);
+    this.add.rectangle(px + 10, py + 14, 8, 8, palette.cream, 0.9).setStrokeStyle(1, palette.brass);
+    this.add.rectangle(px + 28, py + 18, 4, 18, palette.copper, 0.9);
   }
 
   drawSidebar() {
@@ -790,6 +815,17 @@ class SteamRpgScene extends Phaser.Scene {
     if (tile === 'P') {
       this.addLog('Blueprint note: recover key, read gauge, tune valve, win fuse.');
     }
+    if (tile === 'D') {
+      this.transitionToMap('restRoom', { x: 5, y: 9 }, 'You descend into a quiet boilerhouse rest room.');
+      return;
+    }
+    if (tile === 'U') {
+      this.transitionToMap(worldMap.id, { x: 5, y: 9 }, 'You climb back into the factory district.');
+      return;
+    }
+    if (tile === 'B') {
+      this.addLog('A warm brass cot is ready. Press Space or Enter to rest.');
+    }
     if (tile === 'X') {
       this.addLog('The western exit is open. The next factory district is not built yet.');
       this.playSfx('success');
@@ -813,21 +849,35 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   randomEncountersEnabled() {
-    return worldMap.randomEncounters?.enabled !== false;
+    return this.currentMap.randomEncounters?.enabled !== false;
   }
 
   pickRandomEncounterId() {
-    const encounterIds = worldMap.randomEncounters?.encounters?.length
-      ? worldMap.randomEncounters.encounters
+    const encounterIds = this.currentMap.randomEncounters?.encounters?.length
+      ? this.currentMap.randomEncounters.encounters
       : ['factoryAmbush'];
     return Phaser.Math.RND.pick(encounterIds);
   }
 
   rollStepsUntilEncounter() {
-    const settings = worldMap.randomEncounters || {};
+    const settings = this.currentMap?.randomEncounters || {};
     const min = settings.minSteps ?? 15;
     const max = settings.maxSteps ?? 30;
     return Phaser.Math.Between(min, Math.max(min, max));
+  }
+
+  transitionToMap(mapId, player, message) {
+    const nextMap = worldMaps[mapId];
+    if (!nextMap) return;
+
+    this.currentMapId = mapId;
+    this.currentMap = nextMap;
+    this.worldTiles = this.mapTilesById[mapId];
+    this.player = player;
+    this.stepsUntilEncounter = this.rollStepsUntilEncounter();
+    this.addLog(message);
+    this.playSfx('success');
+    this.renderWorld();
   }
 
   handleConfirm() {
@@ -932,6 +982,11 @@ class SteamRpgScene extends Phaser.Scene {
 
   interactWorld() {
     const tile = this.worldTiles[this.player.y][this.player.x];
+    if (tile === 'B') {
+      this.restAtBed();
+      return;
+    }
+
     if (tile !== 'V') {
       this.addLog('Nothing mechanical responds here.');
       this.playSfx('error');
@@ -978,6 +1033,17 @@ class SteamRpgScene extends Phaser.Scene {
     this.gateOpen = true;
     this.addLog('Valve sequence complete. Western exit pressure-lock released.');
     this.playSfx('success');
+    this.renderWorld();
+  }
+
+  restAtBed() {
+    this.party.forEach((unit) => {
+      unit.hp = unit.maxHp;
+      unit.statuses = [];
+      unit.atb = 0;
+    });
+    this.addLog('The party rests. HP fully restored and conditions cleared.');
+    this.playSfx('heal');
     this.renderWorld();
   }
 
@@ -1362,7 +1428,12 @@ class SteamRpgScene extends Phaser.Scene {
   }
 
   replaceWorldTile(target, replacement) {
-    this.worldTiles = this.worldTiles.map((row) => row.replace(target, replacement));
+    this.replaceMapTile(this.currentMapId, target, replacement);
+    this.worldTiles = this.mapTilesById[this.currentMapId];
+  }
+
+  replaceMapTile(mapId, target, replacement) {
+    this.mapTilesById[mapId] = this.mapTilesById[mapId].map((row) => row.replace(target, replacement));
   }
 
   addLog(message) {
@@ -1382,6 +1453,7 @@ class SteamRpgScene extends Phaser.Scene {
       consumables: this.consumables,
       equipment: this.equipment,
       party: this.party.map((unit) => ({ id: unit.id, hp: unit.hp })),
+      currentMapId: this.currentMapId,
       player: this.player,
       valveInput: this.valveInput,
       valveSolved: this.valveSolved,
@@ -1411,13 +1483,16 @@ class SteamRpgScene extends Phaser.Scene {
     this.inventory = new Set(state.inventory || []);
     this.consumables = { ...this.consumables, ...(state.consumables || {}) };
     this.equipment = { ...this.equipment, ...(state.equipment || {}) };
+    this.currentMapId = worldMaps[state.currentMapId] ? state.currentMapId : worldMap.id;
+    this.currentMap = worldMaps[this.currentMapId];
+    this.worldTiles = this.mapTilesById[this.currentMapId];
     this.player = state.player || this.player;
     this.valveInput = state.valveInput || [];
     this.valveSolved = Boolean(state.valveSolved);
     this.westernGateOpen = Boolean(state.westernGateOpen || state.valveSolved);
     this.gateOpen = Boolean(state.gateOpen);
     this.enemyCleared = Boolean(state.enemyCleared);
-    const encounterMaxSteps = worldMap.randomEncounters?.maxSteps ?? 30;
+    const encounterMaxSteps = this.currentMap.randomEncounters?.maxSteps ?? 30;
     this.stepsUntilEncounter = Number.isInteger(state.stepsUntilEncounter)
       ? Phaser.Math.Clamp(state.stepsUntilEncounter, 1, encounterMaxSteps)
       : this.rollStepsUntilEncounter();
@@ -1427,7 +1502,10 @@ class SteamRpgScene extends Phaser.Scene {
       const savedUnit = state.party?.find((entry) => entry.id === unit.id);
       if (savedUnit) unit.hp = Phaser.Math.Clamp(savedUnit.hp, 1, unit.maxHp);
     });
-    if (this.enemyCleared) this.replaceWorldTile('E', '.');
+    if (this.enemyCleared) {
+      this.replaceMapTile(worldMap.id, 'E', '.');
+      this.worldTiles = this.mapTilesById[this.currentMapId];
+    }
     this.mode = WORLD;
     this.previousMode = WORLD;
     this.addLog('Local save loaded.');
