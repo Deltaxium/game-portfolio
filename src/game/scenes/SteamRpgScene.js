@@ -297,6 +297,21 @@ class SteamRpgScene extends Phaser.Scene {
     if (tile === 'P') {
       this.drawBlueprintStation(px, py);
     }
+    if (tile === '=') {
+      this.drawConveyorTile(px, py, x, y);
+    }
+    if (tile === '~') {
+      this.drawSteamVentTile(px, py, x, y);
+    }
+    if (tile === 'p') {
+      this.drawPipeRunTile(px, py, x, y);
+    }
+    if (tile === 'r') {
+      this.drawRailTile(px, py, x, y);
+    }
+    if (tile === 'o') {
+      this.drawBoilerTankTile(px, py, x, y);
+    }
   }
 
   drawFactoryBaseTile(px, py, x, y, isWall) {
@@ -325,6 +340,50 @@ class SteamRpgScene extends Phaser.Scene {
         this.add.line(px + 10 + i * 6, py + 17, 0, -3, 0, 3, palette.copper, 0.55).setLineWidth(1);
       }
     }
+  }
+
+  drawConveyorTile(px, py, x, y) {
+    this.add.rectangle(px + 17, py + 17, 28, 22, 0x1a1210, 0.9).setStrokeStyle(1, palette.copper);
+    this.add.line(px + 17, py + 10, -11, 0, 11, 0, palette.smoke, 0.9).setLineWidth(2);
+    this.add.line(px + 17, py + 24, -11, 0, 11, 0, palette.smoke, 0.9).setLineWidth(2);
+    for (let i = 0; i < 3; i += 1) {
+      const offset = (i * 8 + (x + y) * 2) % 24;
+      this.add.line(px + 8 + offset, py + 17, -3, -4, 3, 4, palette.brass, 0.8).setLineWidth(2);
+    }
+  }
+
+  drawSteamVentTile(px, py, x, y) {
+    this.add.rectangle(px + 17, py + 17, 24, 18, 0x1b110d, 0.92).setStrokeStyle(1, palette.smoke);
+    for (let i = 0; i < 4; i += 1) {
+      this.add.line(px + 8 + i * 6, py + 18, 0, -6, 0, 6, palette.copper, 0.7).setLineWidth(1);
+    }
+    const steamAlpha = 0.25 + ((x + y) % 3) * 0.08;
+    this.add.circle(px + 12, py + 9, 5, palette.cream, steamAlpha);
+    this.add.circle(px + 21, py + 7, 4, palette.cream, steamAlpha * 0.8);
+  }
+
+  drawPipeRunTile(px, py, x, y) {
+    this.add.line(px + 17, py + 16, -15, 0, 15, 0, palette.copper, 0.95).setLineWidth(5);
+    this.add.line(px + 17, py + 20, -15, 0, 15, 0, palette.brass, 0.65).setLineWidth(2);
+    if ((x + y) % 2 === 0) {
+      this.add.circle(px + 17, py + 17, 5, palette.iron).setStrokeStyle(1, palette.brass);
+    }
+  }
+
+  drawRailTile(px, py, x, y) {
+    this.add.line(px + 8, py + 17, 0, -15, 0, 15, palette.brass, 0.82).setLineWidth(2);
+    this.add.line(px + 26, py + 17, 0, -15, 0, 15, palette.brass, 0.82).setLineWidth(2);
+    if (y % 2 === 0) {
+      this.add.line(px + 17, py + 17, -10, 0, 10, 0, palette.smoke, 0.9).setLineWidth(3);
+    }
+  }
+
+  drawBoilerTankTile(px, py, x, y) {
+    this.add.rectangle(px + 17, py + 17, 27, 25, 0x38231a, 0.96).setStrokeStyle(2, palette.copper);
+    this.add.circle(px + 17, py + 17, 9, palette.iron, 0.9).setStrokeStyle(2, palette.brass);
+    this.add.line(px + 17, py + 17, 0, 0, x % 2 === y % 2 ? 6 : -6, -4, palette.red).setLineWidth(2);
+    this.add.circle(px + 7, py + 7, 2, palette.brass, 0.9);
+    this.add.circle(px + 27, py + 27, 2, palette.brass, 0.75);
   }
 
   drawKeyStation(px, py) {
