@@ -82,6 +82,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.enemyActing = false;
     this.currentEncounter = null;
     this.stepsUntilEncounter = 0;
+    this.startingPoint = null;
+    this.latestRestPoint = null;
     this.damagePopups = [];
     this.hitEffects = [];
     this.devToolsOpen = false;
@@ -212,6 +214,8 @@ class SteamRpgScene extends Phaser.Scene {
     this.currentMap = worldMaps[this.currentMapId];
     this.worldTiles = this.mapTilesById[this.currentMapId];
     this.player = { x: 5, y: 9 };
+    this.startingPoint = { mapId: worldMap.id, player: { x: 5, y: 9 } };
+    this.latestRestPoint = null;
     this.stepsUntilEncounter = this.rollStepsUntilEncounter();
   }
 
@@ -445,7 +449,10 @@ class SteamRpgScene extends Phaser.Scene {
     if (tile === 'P') {
       this.drawBlueprintStation(px, py);
     }
-    if (tile === 'D' || tile === 'U') {
+    if (tile === 'D') {
+      this.drawRestRoomDoor(px, py);
+    }
+    if (tile === 'U') {
       this.drawMapTransitionTile(px, py, tile);
     }
     if (tile === 'B') {
@@ -611,6 +618,14 @@ class SteamRpgScene extends Phaser.Scene {
     this.add.rectangle(px + 17, py + 17, 28, 28, 0x1b110d, 0.92).setStrokeStyle(2, palette.brass);
     this.add.rectangle(px + 17, py + 17, 18, 18, 0x21313a, 0.84).setStrokeStyle(1, palette.copper);
     this.add.text(px + 12, py + 8, direction, this.textStyle(15, palette.amber)).setFontStyle('700');
+  }
+
+  drawRestRoomDoor(px, py) {
+    this.add.rectangle(px + 17, py + 17, 31, 31, 0x21313a).setStrokeStyle(2, palette.green);
+    this.add.rectangle(px + 8, py + 17, 7, 25, palette.copper, 0.86);
+    this.add.rectangle(px + 26, py + 17, 7, 25, palette.copper, 0.86);
+    this.add.rectangle(px + 17, py + 17, 14, 25, 0x1b110d, 0.74).setStrokeStyle(1, palette.brass);
+    this.add.circle(px + 22, py + 18, 2, palette.amber, 0.95);
   }
 
   drawBedStation(px, py) {
@@ -1042,9 +1057,51 @@ class SteamRpgScene extends Phaser.Scene {
       unit.statuses = [];
       unit.atb = 0;
     });
-    this.addLog('The party rests. HP fully restored and conditions cleared.');
+    this.latestRestPoint = {
+      mapId: this.currentMapId,
+      player: { ...this.player },
+    };
+    this.addLog('The party rests. HP fully restored and this bed is now the latest rest point.');
     this.playSfx('heal');
     this.renderWorld();
+  }
+
+  respawnPartyAfterDefeat() {
+    const respawnPoint = this.latestRestPoint || this.startingPoint;
+    const nextMap = worldMaps[respawnPoint.mapId] || worldMaps[worldMap.id];
+
+    this.party.forEach((unit) => {
+      unit.hp = unit.maxHp;
+      unit.statuses = [];
+      unit.atb = 0;
+    });
+    this.clearBattleStatuses();
+    this.currentEncounter = null;
+    this.battleEnemies = [];
+    this.enemyActing = false;
+    this.currentMapId = nextMap.id;
+    this.currentMap = nextMap;
+    this.worldTiles = this.mapTilesById[this.currentMapId];
+    this.player = { ...respawnPoint.player };
+    this.stepsUntilEncounter = this.rollStepsUntilEncounter();
+    this.mode = WORLD;
+    this.previousMode = WORLD;
+    this.addLog(this.latestRestPoint
+      ? 'The party is recovered at the latest rest point.'
+      : 'The party is recovered at the factory entrance.');
+    this.playSfx('heal');
+    this.renderWorld();
+  }
+
+  validateRestPoint(restPoint) {
+    if (!restPoint || !worldMaps[restPoint.mapId]) return null;
+    const { x, y } = restPoint.player || {};
+    const tile = worldMaps[restPoint.mapId].tiles[y]?.[x];
+    if (!Number.isInteger(x) || !Number.isInteger(y) || !tile || tile === '#') return null;
+    return {
+      mapId: restPoint.mapId,
+      player: { x, y },
+    };
   }
 
   adjustValveChoice(direction) {
@@ -1216,8 +1273,7 @@ class SteamRpgScene extends Phaser.Scene {
       this.inMenu = false;
       this.activeUnitIndex = null;
       this.clearTransientBattleEffects();
-      this.addLog('The boilers go cold. Refresh to retry.');
-      this.renderBattle();
+      this.respawnPartyAfterDefeat();
       return;
     }
 
@@ -1455,6 +1511,7 @@ class SteamRpgScene extends Phaser.Scene {
       party: this.party.map((unit) => ({ id: unit.id, hp: unit.hp })),
       currentMapId: this.currentMapId,
       player: this.player,
+      latestRestPoint: this.latestRestPoint,
       valveInput: this.valveInput,
       valveSolved: this.valveSolved,
       westernGateOpen: this.westernGateOpen,
@@ -1487,6 +1544,7 @@ class SteamRpgScene extends Phaser.Scene {
     this.currentMap = worldMaps[this.currentMapId];
     this.worldTiles = this.mapTilesById[this.currentMapId];
     this.player = state.player || this.player;
+    this.latestRestPoint = this.validateRestPoint(state.latestRestPoint);
     this.valveInput = state.valveInput || [];
     this.valveSolved = Boolean(state.valveSolved);
     this.westernGateOpen = Boolean(state.westernGateOpen || state.valveSolved);
