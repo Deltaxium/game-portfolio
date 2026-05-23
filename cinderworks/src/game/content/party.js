@@ -1,0 +1,53 @@
+export const partyTemplate = [
+  {
+    id: 'ada',
+    name: 'Ada',
+    role: 'Gearblade',
+    basicAttackPower: 10,
+    maxHp: 132,
+    hp: 132,
+    speed: 43,
+    atb: 10,
+    statuses: [],
+    skills: [
+      { name: 'Saber Strike', power: 24, target: 'enemy', description: 'Reliable gearblade hit.' },
+      {
+        name: 'Overcrank',
+        power: 38,
+        target: 'enemy',
+        selfStatus: 'overheated',
+        description: 'Harder hit, overheats Ada.',
+      },
+      {
+        name: 'Spark Snare',
+        power: 16,
+        target: 'enemy',
+        status: 'jamming',
+        statusChance: 0.75,
+        description: 'Damage and jamming chance.',
+      },
+    ],
+  },
+  {
+    id: 'brass',
+    name: 'Brass',
+    role: 'Boiler Medic',
+    basicAttackPower: 10,
+    maxHp: 104,
+    hp: 104,
+    speed: 35,
+    atb: 0,
+    statuses: [],
+    skills: [
+      { name: 'Pipe Wrench', power: 19, target: 'enemy', description: 'Basic blunt attack.' },
+      { name: 'Steam Mend', power: -38, target: 'ally', description: 'Repairs the weakest ally.' },
+      {
+        name: 'Coolant Flush',
+        power: -16,
+        target: 'ally',
+        cleanse: true,
+        description: 'Small heal and clears status.',
+      },
+    ],
+  },
+];

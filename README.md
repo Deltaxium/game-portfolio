@@ -1,42 +1,43 @@
-# Cinderworks
+# Gamestudio
 
-A steampunk-era turn-based RPG prototype built with React, Phaser, and Firebase Hosting.
+This workspace holds separate game projects as sibling folders. Each game should own its own source,
+docs, assets, and build setup when it becomes playable.
 
-The current vertical slice includes top-down exploration, gated item progression, a valve puzzle,
-side-view Active Time Battle combat, and mechanical status effects that can reduce damage output or
-inhibit actions.
+## Games
 
-## Local Development
+- `cinderworks/`: steampunk RPG prototype with top-down exploration and side-view ATB combat.
+- `dustfall-trails/`: Wild West RPG concept folder.
+
+## Website Direction
+
+The public website should present a homepage that lets players choose between available games. Each
+game should have its own separated page, route, or build area rather than sharing internal gameplay
+folders with another game.
+
+The static homepage lives in `website/`. The combined deploy artifact is generated in `site-dist/`:
 
 ```bash
+cd cinderworks
+npm run build
+cd ..
+cd dustfall-trails
+npm run build
+cd ..
+node scripts/build-site.mjs
+```
+
+Generated layout:
+
+- `/`: game selection homepage.
+- `/cinderworks/`: built Cinderworks game.
+- `/dustfall-trails/`: Dustfall Trails concept page.
+
+## Cinderworks
+
+```bash
+cd cinderworks
 npm install
 npm run dev
 ```
 
-## Build
-
-```bash
-npm run build
-```
-
-The production site is written to `dist/`.
-
-## Project Docs
-
-Agent and contributor docs start at `AGENTS.md` and `docs/INDEX.md`.
-
-## Firebase Hosting
-
-The Firebase project is configured in `.firebaserc` as `game-portfolio-deltaxium`.
-Pushes to `main` deploy the production build to Firebase Hosting.
-
-## GitHub Pages
-
-In the GitHub repository settings, set Pages to deploy from GitHub Actions. The workflow in
-`.github/workflows/deploy.yml` publishes `dist/` on every push to `main`.
-
-## License
-
-Source code is licensed under the MIT License. The game title, story, characters, setting, dialogue,
-art direction, visual assets, audio assets, logos, and other creative game content are All Rights
-Reserved unless explicitly stated otherwise. See `LICENSE`.
+Project docs start at `cinderworks/AGENTS.md` and `cinderworks/docs/INDEX.md`.

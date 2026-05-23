@@ -1,0 +1,48 @@
+import { palette } from '../../config/gameData.js';
+
+export const boilerWarden = {
+  id: 'boiler-warden',
+  battleSpriteId: 'boiler-warden',
+  battleScale: 1.72,
+  name: 'Boiler Warden',
+  maxHp: 320,
+  hp: 320,
+  speed: 48,
+  atb: 0,
+  statuses: [],
+  tint: palette.iron,
+  statusResists: ['burned'],
+  statusVulnerable: ['jamming'],
+  actions: [
+    {
+      id: 'furnace-slam',
+      name: 'Furnace Slam',
+      power: 20,
+      target: 'party-random',
+      status: 'burned',
+      statusChance: 0.35,
+      criticalChance: 0.08,
+      log: 'brings down a furnace-plated fist',
+    },
+    {
+      id: 'cinder-spray',
+      name: 'Cinder Spray',
+      power: 14,
+      target: 'party-random',
+      status: 'burned',
+      statusChance: 0.42,
+      criticalChance: 0.05,
+      log: 'sprays cinders from its firebox',
+    },
+    {
+      id: 'pressure-bellow',
+      name: 'Pressure Bellow',
+      power: 15,
+      target: 'party-random',
+      status: 'stunned',
+      statusChance: 0.18,
+      criticalChance: 0.06,
+      log: 'vents a stunning pressure bellow',
+    },
+  ],
+};

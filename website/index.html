@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Game Studio homepage with access to Cinderworks, Dustfall Trails, and future games."
+    />
+    <title>Game Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Game Studio</p>
+          <h1>Choose a game</h1>
+          <p class="intro">
+            Separate RPG prototypes and game worlds, each with its own folder, identity, and playable
+            space as development grows.
+          </p>
+        </div>
+      </header>
+
+      <section class="game-grid" aria-label="Available games">
+        <article class="game-card cinderworks-card">
+          <div class="scene-preview" aria-hidden="true">
+            <span class="pipe pipe-a"></span>
+            <span class="pipe pipe-b"></span>
+            <span class="gauge"></span>
+          </div>
+          <div class="card-copy">
+            <p class="status">Playable prototype</p>
+            <h2>Cinderworks</h2>
+            <p>
+              Steampunk RPG slice with top-down exploration, gated puzzles, side-view ATB battles,
+              and mechanical status effects.
+            </p>
+          </div>
+          <a class="play-link" href="./cinderworks/">Play Cinderworks</a>
+        </article>
+
+        <article class="game-card dustfall-card">
+          <div class="scene-preview" aria-hidden="true">
+            <span class="sun"></span>
+            <span class="mesa mesa-a"></span>
+            <span class="mesa mesa-b"></span>
+            <span class="trail"></span>
+          </div>
+          <div class="card-copy">
+            <p class="status">Playable prototype</p>
+            <h2>Dustfall Trails</h2>
+            <p>
+              Wild West ATB prototype with hub prep, dangerous travel, mounted tactics, rider and
+              horse stances, bounties, and horse bond rewards.
+            </p>
+          </div>
+          <a class="play-link" href="./dustfall-trails/">Play Dustfall Trails</a>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

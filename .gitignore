@@ -1,6 +1,8 @@
 node_modules/
 dist/
+site-dist/
 .firebase/
 firebase-debug.log
 *.local
 .DS_Store
+*:Zone.Identifier

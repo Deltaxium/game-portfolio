@@ -28,23 +28,39 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            cinderworks/package-lock.json
+            dustfall-trails/package-lock.json
 
-      - name: Install dependencies
+      - name: Install Cinderworks dependencies
         run: npm ci
+        working-directory: cinderworks
 
-      - name: Build
+      - name: Build Cinderworks
         run: npm run build
+        working-directory: cinderworks
+
+      - name: Install Dustfall Trails dependencies
+        run: npm ci
+        working-directory: dustfall-trails
+
+      - name: Build Dustfall Trails
+        run: npm run build
+        working-directory: dustfall-trails
+
+      - name: Build combined website
+        run: node scripts/build-site.mjs
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site-dist
 
       - name: Upload Firebase artifact
         uses: actions/upload-artifact@v4
         with:
           name: firebase-dist
-          path: dist
+          path: site-dist
 
   github-pages:
     needs: build
@@ -68,7 +84,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: firebase-dist
-          path: dist
+          path: site-dist
 
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
