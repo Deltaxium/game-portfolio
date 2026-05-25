@@ -10,12 +10,29 @@ export const battleMaps = {
     origin: { x: 28, y: 106 },
     baseTerrain: 'dust',
     elements: [
-      ['highRidge', 'ridge', null, 'road', 'road', null, 'cover', 'ridge'],
-      ['ridge', 'cactusPatch', 'cover', 'road', null, 'gully', null, 'highRidge'],
-      [null, 'gully', null, 'road', 'cover', 'mud', 'ridge', null],
-      ['cover', null, 'ridge', 'road', 'road', null, 'gully', 'cover'],
-      ['gully', null, 'mud', 'cover', 'road', 'ridge', 'cactusPatch', null],
-      ['ridge', 'cover', null, 'road', 'road', null, 'cover', 'highRidge'],
+      ['highRidge', 'ridge', null, 'road', 'road', null, 'barrelCover', 'ridge'],
+      ['ridge', 'cactusPatch', 'brokenSign', 'road', null, 'gully', null, 'highRidge'],
+      [null, 'gully', null, 'road', 'barrelCover', 'mud', 'ridge', null],
+      ['brokenSign', null, 'ridge', 'road', 'road', null, 'gully', 'barrelCover'],
+      ['gully', null, 'mud', 'brokenSign', 'road', 'ridge', 'cactusPatch', null],
+      ['ridge', 'barrelCover', null, 'road', 'road', null, 'brokenSign', 'highRidge'],
+    ],
+  },
+  tutorialCinderMesa: {
+    id: 'tutorialCinderMesa',
+    name: 'Tutorial Cinder Mesa',
+    tileWidth: 32,
+    tileHeight: 32,
+    renderTileSize: 64,
+    origin: { x: 28, y: 106 },
+    baseTerrain: 'dust',
+    elements: [
+      ['ridge', null, null, 'road', 'road', null, 'ridge', null],
+      [null, null, 'brokenSign', 'road', null, null, 'barrelCover', 'highRidge'],
+      [null, 'gully', null, 'road', 'brokenSign', null, null, null],
+      ['barrelCover', null, null, 'road', 'road', 'ridge', null, null],
+      [null, null, 'mud', 'barrelCover', 'road', 'ridge', null, null],
+      ['ridge', null, null, 'road', 'road', null, 'brokenSign', null],
     ],
   },
 };
@@ -39,7 +56,7 @@ export function generateBattleMap() {
     right: { cover: 0, ridge: 0, hazard: 0, slow: 0 },
   };
   const terrainGroups = {
-    cover: ['cover', 'brokenSign', 'barrelCover'],
+    cover: ['brokenSign', 'barrelCover'],
     ridge: ['ridge', 'highRidge'],
     hazard: ['cactusPatch', 'gully'],
     slow: ['mud'],
@@ -96,6 +113,14 @@ export function generateBattleMap() {
     id: 'randomCinderMesaRoad',
     name: 'Shifting Cinder Mesa',
     elements,
+  };
+}
+
+export function generateTutorialBattleMap() {
+  const base = getBattleMap('tutorialCinderMesa');
+  return {
+    ...base,
+    elements: base.elements.map((row) => [...row]),
   };
 }
 

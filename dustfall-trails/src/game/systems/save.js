@@ -1,4 +1,5 @@
 const SAVE_KEY = 'dustfall-trails-save-v1';
+const AUTO_SAVE_KEY = 'dustfall-trails-autosave-v1';
 const SLOT_KEYS = [
   SAVE_KEY,
   'dustfall-trails-save-v1-slot-2',
@@ -15,6 +16,9 @@ export function createInitialGameState() {
     showdown: 0,
     bountyActive: false,
     activeBountyId: null,
+    capturedBounties: [],
+    trailLedger: null,
+    lastTrailReport: null,
     routeProgress: 0,
     preparedSynergy: null,
     nextEncounterId: null,
@@ -69,6 +73,7 @@ export function loadGameSlot(slot) {
   try {
     const payload = JSON.parse(raw);
     if (!payload?.state) return null;
+    if (!shouldAutoSave(payload.state)) return null;
     return {
       ...createInitialGameState(),
       ...payload.state,
@@ -76,12 +81,66 @@ export function loadGameSlot(slot) {
         ...createInitialGameState().items,
         ...(payload.state.items || {}),
       },
+      capturedBounties: payload.state.capturedBounties || [],
       slot,
       savedAt: payload.savedAt,
     };
   } catch {
     return null;
   }
+}
+
+export function deleteSaveSlot(slot) {
+  if (!storageAvailable()) return false;
+  const key = SLOT_KEYS[slot - 1] || SLOT_KEYS[0];
+  window.localStorage.removeItem(key);
+  return !window.localStorage.getItem(key);
+}
+
+export function saveAutoGame(state) {
+  if (!storageAvailable() || !state || !shouldAutoSave(state)) return false;
+  const payload = {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    state: clone(state),
+  };
+  window.localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(payload));
+  return payload;
+}
+
+export function shouldAutoSave(state) {
+  if (!state) return false;
+  const tutorial = state.tutorial || {};
+  return Boolean(tutorial.battleComplete && tutorial.townComplete && !tutorial.active);
+}
+
+export function loadAutoGame() {
+  if (!storageAvailable()) return null;
+  const raw = window.localStorage.getItem(AUTO_SAVE_KEY);
+  if (!raw) return null;
+  try {
+    const payload = JSON.parse(raw);
+    if (!payload?.state) return null;
+    return {
+      ...createInitialGameState(),
+      ...payload.state,
+      items: {
+        ...createInitialGameState().items,
+        ...(payload.state.items || {}),
+      },
+      capturedBounties: payload.state.capturedBounties || [],
+      savedAt: payload.savedAt,
+      autoSaved: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function deleteAutoGame() {
+  if (!storageAvailable()) return false;
+  window.localStorage.removeItem(AUTO_SAVE_KEY);
+  return !window.localStorage.getItem(AUTO_SAVE_KEY);
 }
 
 export function hasSaveGame() {
@@ -92,14 +151,26 @@ export function hasAnySaveGame() {
   return SAVE_SLOTS.some((slot) => Boolean(loadGameSlot(slot)));
 }
 
+export function hasAnyLoadableGame() {
+  return Boolean(loadAutoGame()) || hasAnySaveGame();
+}
+
 export function getSaveInfo() {
   return getSaveSlotInfo(1);
 }
 
 export function getSaveSlotInfo(slot) {
   const saved = loadGameSlot(slot);
+  return getSaveInfoFromState(saved, slot);
+}
+
+export function getAutoSaveInfo() {
+  return getSaveInfoFromState(loadAutoGame(), 'auto');
+}
+
+export function getSaveInfoFromState(saved, slot) {
   if (!saved?.savedAt) return null;
-  const party = saved.party?.riders || [];
+  const party = Array.isArray(saved.party) ? saved.party : saved.party?.riders || [];
   const crewHealth = party.length
     ? party.map((rider) => `${rider.name.split(' ')[0]} ${rider.hp}/${rider.maxHp}`).join('   ')
     : 'Crew not prepared';

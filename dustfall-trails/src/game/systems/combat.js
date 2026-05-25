@@ -1,6 +1,6 @@
 import { encounters, horseCatalog, statusEffects, weaponCatalog } from '../config/gameData.js';
 import { getLane, laneDistance, terrainAt } from './grid.js';
-import { countEquippedTraitTag, hasPartySynergy } from './synergy.js';
+import { countEquippedTraitTag, hasPartySynergy, hasSynergySurge } from './synergy.js';
 
 export function createEncounter(id, heat) {
   const encounter = encounters[id];
@@ -97,8 +97,10 @@ export function riderSpeed(rider, partySynergy = null) {
   if (hasEquippedTrait(rider, 'Quick Hands') && ['revolver', 'throwable', 'melee'].includes(getWeapon(rider).id)) speed += 2;
   if (hasEquippedTrait(rider, 'Ghost Sprint') && isMounted(rider)) speed += 3;
   if (hasEquippedTrait(rider, 'Loose Reins') && isMounted(rider)) speed += 2;
-  if (hasPartySynergy(partySynergy, 'stampede') && isMounted(rider)) speed += 2 + Math.min(2, countEquippedTraitTag(partySynergy, 'Mounted'));
+  if (hasPartySynergy(partySynergy, 'outlaw-rush') && (hasStatus(rider, 'wanted') || rider.riderStance === 'Outlaw')) speed += 1 + Math.min(1, countEquippedTraitTag(partySynergy, 'Wanted'));
+  if (hasSynergySurge(partySynergy, 'outlaw-rush')) speed += 2;
   if (hasPartySynergy(partySynergy, 'dust-devils')) speed += 2 + Math.min(2, countEquippedTraitTag(partySynergy, 'Mobility'));
+  if (hasSynergySurge(partySynergy, 'dust-devils')) speed += 1;
   if (hasStatus(rider, 'quick')) speed += 5;
   if (hasStatus(rider, 'showdown')) speed += 8;
   if (hasStatus(rider, 'grit')) speed += 10;
@@ -152,9 +154,11 @@ export function riderDamage(rider, target, map, partySynergy = null) {
   if (hasEquippedTrait(rider, 'Steady Aim') && weapon.id === 'rifle' && (riderLane === 'Back' || riderTerrain.cover)) damage += 4;
   if (hasEquippedTrait(rider, 'Long Watch') && riderLane === 'Back') damage += 3;
   if (hasEquippedTrait(rider, 'Iron Charge') && isMounted(rider)) damage += 4;
-  if (hasPartySynergy(partySynergy, 'stampede') && isMounted(rider)) damage += 4 + Math.min(2, countEquippedTraitTag(partySynergy, 'Mounted'));
   if (hasPartySynergy(partySynergy, 'deadeye') && ['rifle', 'revolver'].includes(weapon.id) && riderLane !== 'Front') damage += 3 + Math.min(2, countEquippedTraitTag(partySynergy, weapon.id === 'rifle' ? 'Rifle' : 'Revolver'));
-  if (hasPartySynergy(partySynergy, 'iron-vultures') && (hasStatus(target, 'bleeding-out') || hasStatus(rider, 'wanted') || hasStatus(rider, 'grit'))) damage += 4 + Math.min(2, countEquippedTraitTag(partySynergy, 'Bleed') + countEquippedTraitTag(partySynergy, 'Wanted') + countEquippedTraitTag(partySynergy, 'Grit'));
+  if (hasPartySynergy(partySynergy, 'iron-vultures') && hasStatus(target, 'bleeding-out')) damage += 3 + Math.min(1, countEquippedTraitTag(partySynergy, 'Bleed'));
+  if (hasPartySynergy(partySynergy, 'gravewind-riders') && isMounted(rider) && hasStatus(target, 'horse-panic')) damage += 2;
+  if (hasPartySynergy(partySynergy, 'ashen-trail') && target.statuses?.length) damage += Math.min(3, target.statuses.length);
+  if (hasPartySynergy(partySynergy, 'sundown-reapers') && (hasStatus(target, 'showdown') || hasStatus(target, 'marked'))) damage += 2;
 
   if (rider.riderStance === 'Sharpshooter') damage += 9 + riderTerrain.elevation * 3;
   if (rider.riderStance === 'Sharpshooter' && riderLane === 'Back') damage += 7;
@@ -208,6 +212,11 @@ export function skillPower(skill, rider, target, map, partySynergy = null) {
   if (hasPartySynergy(partySynergy, 'deadeye') && ['rifle', 'revolver'].includes(weapon.id) && riderLane !== 'Front') power += 2 + Math.min(1, countEquippedTraitTag(partySynergy, weapon.id === 'rifle' ? 'Rifle' : 'Revolver'));
   if (hasPartySynergy(partySynergy, 'dust-devils') && (weapon.id === 'throwable' || hasStatus(target, 'snared') || hasStatus(target, 'dust-choked'))) power += 3 + Math.min(2, countEquippedTraitTag(partySynergy, 'Mobility'));
   if (hasPartySynergy(partySynergy, 'iron-vultures') && (hasStatus(target, 'bleeding-out') || hasStatus(rider, 'wanted') || hasStatus(rider, 'grit'))) power += 3 + Math.min(2, countEquippedTraitTag(partySynergy, 'Bleed') + countEquippedTraitTag(partySynergy, 'Wanted') + countEquippedTraitTag(partySynergy, 'Grit'));
+  if (hasPartySynergy(partySynergy, 'ashen-trail') && target.statuses?.length) power += Math.min(5, target.statuses.length * 2);
+  if (hasPartySynergy(partySynergy, 'outlaw-rush') && hasStatus(rider, 'wanted')) power += 1;
+  if (hasPartySynergy(partySynergy, 'sundown-reapers') && (hasStatus(target, 'showdown') || hasStatus(target, 'marked'))) power += 3;
+  if (hasSynergySurge(partySynergy, 'deadeye') && ['rifle', 'revolver'].includes(weapon.id) && riderLane !== 'Front') power += 1;
+  if (hasSynergySurge(partySynergy, 'iron-vultures') && target.hp / target.maxHp <= 0.5) power += 1;
 
   if (riderTerrain.elevation > 0 && skill.id === 'iron-shot') power += riderTerrain.elevation * 4;
   if (skill.id === 'iron-shot' && riderLane === 'Back') power += 4;
@@ -279,7 +288,8 @@ export function incomingDamage(target, amount, map, partySynergy = null) {
   if (hasEquippedTrait(target, 'Dust Shield') && terrain.cover && !isMounted(target)) damage *= 0.88;
   if (hasEquippedTrait(target, 'Saddle Guard') && isMounted(target) && lane === 'Front') damage *= 0.88;
   if (hasEquippedTrait(target, 'Calm Under Fire') && hasStatus(target, 'horse-panic')) damage *= 0.9;
-  if (hasPartySynergy(partySynergy, 'frontier-survivors')) damage *= 0.92 - Math.min(0.04, countEquippedTraitTag(partySynergy, 'Tank') * 0.02);
+  if (hasPartySynergy(partySynergy, 'trail-wardens') && hasStatus(target, 'guarded')) damage *= 0.9;
+  if (hasSynergySurge(partySynergy, 'trail-wardens')) damage *= 0.93;
   if (terrain.cover && !isMounted(target)) damage *= 0.72;
   if (terrain.elevation < 0) damage *= 1.12;
   if (hasStatus(target, 'guarded')) damage *= 0.62;
@@ -295,7 +305,8 @@ export function healingAmount(target, baseAmount, healer = target, partySynergy 
   if (hasEquippedTrait(healer, 'Trail Triage')) healing += 5;
   if (hasEquippedTrait(healer, 'Field Surgeon')) healing += 7;
   if (hasEquippedTrait(healer, 'Dustproof Saddle') && isMounted(healer)) healing += 4;
-  if (hasPartySynergy(partySynergy, 'frontier-survivors')) healing += 4 + Math.min(3, countEquippedTraitTag(partySynergy, 'Support'));
+  if (hasPartySynergy(partySynergy, 'trail-wardens')) healing += 3 + Math.min(3, countEquippedTraitTag(partySynergy, 'Support'));
+  if (hasSynergySurge(partySynergy, 'trail-wardens')) healing += 4;
   if (hasStatus(target, 'sunstroke')) healing *= 0.62;
   if (hasStatus(target, 'fatigue')) healing *= 0.82;
   return Math.max(1, Math.round(healing));

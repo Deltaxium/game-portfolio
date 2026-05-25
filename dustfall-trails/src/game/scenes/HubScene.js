@@ -1,9 +1,8 @@
-import { bountyContracts, palette, scenes } from '../config/gameData.js';
+import { bountyContracts, itemCatalog, palette, scenes } from '../config/gameData.js';
 import { desertTileset } from '../assets/tiles/free-desert/index.js';
 import { createParty, restoreParty } from '../systems/party.js';
 import {
   getSaveSlotInfo,
-  getSaveSlotInfos,
   loadGameSlot,
   saveGameSlot,
   SAVE_SLOTS,
@@ -27,7 +26,13 @@ export default class HubScene extends BaseScene {
     this.uiObjects = [];
     this.pauseObjects = [];
     this.saveMessage = '';
-    this.townTutorialStep = 0;
+    this.townTutorialStep = state.tutorial?.townStep || 0;
+    this.townTutorialHint = '';
+    this.notebookCategory = null;
+    this.notebookTopic = null;
+    this.completeTrailLedger();
+    if (this.isTownTutorialActive()) this.applyTownTutorialView();
+    this.startTownMusic();
     this.draw();
     this.input.keyboard.on('keydown-ESC', () => this.handleEscape());
   }
@@ -63,12 +68,95 @@ export default class HubScene extends BaseScene {
     this.drawStats();
     if (this.activeBuilding === 'town') this.drawTownDirectory(state);
     else this.drawBuildingInterior(state);
+    this.drawTrailReport(state);
     this.drawTownTutorial(state);
     this.uiObjects = this.children.list.filter((object) => !existing.has(object));
+    this.uiObjects.forEach((object) => {
+      if ((object.depth || 0) < 50) object.setDepth?.(50);
+    });
+  }
+
+  drawTrailReport(state) {
+    const report = state.lastTrailReport;
+    if (!report) return;
+    const captured = report.captured || [];
+    const items = report.items || [];
+    const rows = [
+      ['Money', this.formatDelta(report.money, '$')],
+      ['Supplies', this.formatDelta(report.supplies)],
+      ...items.map((item) => [this.getReportItemName(item.id), this.formatDelta(item.amount)]),
+      ...captured.map((bounty) => ['Captured', bounty.name]),
+    ];
+    if (!rows.length && !report.note) rows.push(['Trail', 'No inventory changes']);
+
+    const panelX = 268;
+    const panelY = 164;
+    const panelW = 424;
+    const panelH = Math.min(390, 128 + rows.length * 34 + (report.note ? 42 : 0));
+    this.add.rectangle(0, 0, 960, 720, palette.shadow, 0.48).setOrigin(0).setDepth(190).setInteractive();
+    drawPanel(this, panelX, panelY, panelW, panelH, 0.98).setDepth(191);
+    this.add.text(panelX + 24, panelY + 20, 'Trail Inventory Check', titleStyle(24)).setDepth(192);
+    this.add.text(panelX + 24, panelY + 52, 'What changed while the crew was out.', {
+      ...textStyle(11, '#d8c7a0'),
+      wordWrap: { width: panelW - 48 },
+    }).setDepth(192);
+
+    rows.slice(0, 7).forEach(([label, value], index) => {
+      const rowY = panelY + 88 + index * 34;
+      const isCapture = label === 'Captured';
+      this.add.rectangle(panelX + 24, rowY, panelW - 48, 26, palette.shadow, 0.36).setOrigin(0).setStrokeStyle(1, isCapture ? palette.yellow : palette.pale, isCapture ? 0.54 : 0.16).setDepth(192);
+      this.add.text(panelX + 38, rowY + 7, label.toUpperCase(), labelStyle(8, isCapture ? '#f0c24f' : '#f5df9b')).setDepth(193);
+      this.add.text(panelX + 150, rowY + 5, value, {
+        ...textStyle(10, isCapture ? '#fff8e7' : this.getDeltaColor(value)),
+        wordWrap: { width: panelW - 188 },
+      }).setDepth(193);
+    });
+
+    const noteY = panelY + 88 + Math.min(rows.length, 7) * 34 + 8;
+    if (report.note) {
+      this.add.text(panelX + 24, noteY, report.note, {
+        ...textStyle(11, '#fff1bf'),
+        wordWrap: { width: panelW - 48 },
+        lineSpacing: 3,
+      }).setDepth(193);
+    }
+    const buttonY = panelY + panelH - 48;
+    const button = drawButton(this, panelX + panelW - 142, buttonY, 118, 'Close', () => {
+      state.lastTrailReport = null;
+      this.saveCurrentProgress();
+      this.drawTownUi(state);
+    }, true, 'support');
+    button.forEach((object) => object.setDepth?.(194));
+  }
+
+  getReportItemName(id) {
+    if (id === 'supplies') return 'Supplies';
+    return itemCatalog[id]?.name || id;
+  }
+
+  formatDelta(amount, prefix = '') {
+    if (!amount) return `${prefix}0`;
+    const sign = amount > 0 ? '+' : '-';
+    return `${sign}${prefix}${Math.abs(amount)}`;
+  }
+
+  getDeltaColor(value) {
+    if (`${value}`.startsWith('+')) return '#bff0a7';
+    if (`${value}`.startsWith('-')) return '#f5a08a';
+    return '#fff8e7';
   }
 
   openBuilding(building) {
+    if (!this.isTownTutorialActionAllowed('building', building)) {
+      this.blockTownTutorialAction();
+      return;
+    }
     this.activeBuilding = building;
+    if (building !== 'notebook') {
+      this.notebookCategory = null;
+      this.notebookTopic = null;
+    }
+    if (this.completeTownTutorialAction('building', building)) return;
     this.drawTownUi();
   }
 
@@ -84,7 +172,7 @@ export default class HubScene extends BaseScene {
     this.drawBuilding(142, 466, 138, 92, 'Sheriff', 0x5f3823, 'sheriff', () => this.openBuilding('sheriff'));
     this.drawBuilding(470, 468, 148, 82, 'General Store', 0x87522d, 'store', () => this.openBuilding('store'));
     this.drawBountyBoard(244, 474);
-    this.drawWell(486, 286);
+    this.drawWell(548, 286);
     this.drawHitchingPosts(92, 286);
     this.drawTownDetails();
     this.drawCrewMarker(244, 382);
@@ -115,13 +203,6 @@ export default class HubScene extends BaseScene {
       }
     }
 
-    const roadAccent = [
-      [4, 6], [5, 7], [9, 6], [11, 7], [7, 3], [8, 4], [7, 10], [8, 11],
-    ];
-    roadAccent.forEach(([x, y]) => {
-      const accent = this.add.image(origin.x + x * tileSize, origin.y + y * tileSize, desertTileset.key, 1).setOrigin(0).setDepth(1.1);
-      accent.setDisplaySize(tileSize, tileSize).setAlpha(0.5);
-    });
   }
 
   createTownSpriteTextures() {
@@ -134,33 +215,24 @@ export default class HubScene extends BaseScene {
 
   createTownPathTexture() {
     const key = 'town-paths-sprite';
-    if (this.textures.exists(key)) return;
+    if (this.textures.exists(key)) this.textures.remove(key);
     const graphics = this.make.graphics({ x: 0, y: 0, add: false });
     graphics.fillStyle(0xdfb769, 0.48);
     graphics.fillRoundedRect(0, 174, 512, 58, 18);
-    graphics.fillRoundedRect(226, 0, 64, 452, 20);
+    graphics.fillRoundedRect(226, 0, 64, 424, 20);
     graphics.fillStyle(0xc58b45, 0.28);
     graphics.fillRoundedRect(20, 188, 472, 18, 10);
-    graphics.fillRoundedRect(246, 20, 18, 412, 10);
+    graphics.fillRoundedRect(246, 20, 18, 384, 10);
     graphics.lineStyle(2, 0x6f4a2d, 0.28);
     graphics.strokeRoundedRect(0, 174, 512, 58, 18);
-    graphics.strokeRoundedRect(226, 0, 64, 452, 20);
-    graphics.lineStyle(2, 0x4b3120, 0.24);
-    for (let x = 22; x < 492; x += 42) {
-      graphics.lineBetween(x, 186 + (x % 3) * 2, x + 22, 188 + (x % 4));
-      graphics.lineBetween(x, 218 - (x % 4), x + 24, 216 - (x % 3));
-    }
-    for (let y = 20; y < 430; y += 38) {
-      graphics.lineBetween(240, y, 242, y + 22);
-      graphics.lineBetween(278, y + 4, 276, y + 24);
-    }
+    graphics.strokeRoundedRect(226, 0, 64, 424, 20);
     graphics.generateTexture(key, 512, 452);
     graphics.destroy();
   }
 
   createBuildingTexture(type, width, height, color) {
     const key = `town-building-${type}`;
-    if (this.textures.exists(key)) return;
+    if (this.textures.exists(key)) this.textures.remove(key);
     const textureWidth = width + 108;
     const textureHeight = height + 96;
     const cx = textureWidth / 2;
@@ -184,18 +256,11 @@ export default class HubScene extends BaseScene {
       graphics.fillRect(cx - width / 2 - 12, cy + height / 2 + 8, width + 24, 12);
       graphics.fillRect(cx - 47, cy + height / 2 + 20, 7, 26);
       graphics.fillRect(cx + 41, cy + height / 2 + 20, 7, 26);
-      graphics.fillStyle(palette.yellow, 0.86);
-      graphics.fillRect(cx - 35, cy - height / 2 - 28, 70, 18);
-      graphics.lineStyle(2, palette.shadow, 1);
-      graphics.strokeRect(cx - 35, cy - height / 2 - 28, 70, 18);
     } else if (type === 'stable') {
       graphics.fillStyle(palette.shadow, 0.48);
       graphics.fillRect(cx - width / 2 + 1, cy - height / 2 + 21, 34, height - 26);
       graphics.fillStyle(0x4b3120, 1);
       graphics.fillRect(cx - 9, cy + height / 2 + 11, 74, 10);
-      graphics.fillStyle(palette.yellow, 0.76);
-      graphics.fillRect(cx - width / 2 - 4, cy + height / 2 + 27, 36, 18);
-      graphics.fillRect(cx + width / 2 - 28, cy + height / 2 + 25, 48, 14);
     } else if (type === 'sheriff') {
       graphics.fillStyle(0x3a2115, 1);
       graphics.fillRect(cx + width / 2 + 7, cy - height / 2 + 19, 42, height - 18);
@@ -239,29 +304,30 @@ export default class HubScene extends BaseScene {
       lineSpacing: 4,
     });
     this.drawTownStatusCard(642, 238, state);
-    drawButton(this, 642, 340, 238, 'Sheriff Station', () => this.openBuilding('sheriff'), true, 'stance');
-    drawButton(this, 642, 388, 238, 'General Store', () => this.openBuilding('store'), false, 'support');
-    drawButton(this, 642, 436, 238, 'Saloon', () => this.openBuilding('saloon'), false, 'support');
-    drawButton(this, 642, 484, 238, 'Stable', () => this.openBuilding('stable'), false, 'move');
-    this.drawSaveControls(state);
-  }
-
-  drawSaveControls(state) {
-    const saveInfos = getSaveSlotInfos();
-    const filled = saveInfos.filter(Boolean).length;
-    drawButton(this, 642, 536, 238, 'Save Game', () => this.openSaveSlots(), true, 'support');
-    this.add.text(642, 580, this.saveMessage || (filled ? `${filled}/3 save slots filled.` : 'No saved game yet.'), {
-      ...textStyle(8, '#d8c7a0'),
+    this.drawTownActionButton(642, 340, 238, 'Sheriff Station', () => this.openBuilding('sheriff'), true, 'stance', 'building', 'sheriff');
+    this.drawTownActionButton(642, 388, 238, 'General Store', () => this.openBuilding('store'), false, 'support', 'building', 'store');
+    this.drawTownActionButton(642, 436, 238, 'Saloon', () => this.openBuilding('saloon'), false, 'support', 'building', 'saloon');
+    this.drawTownActionButton(642, 484, 238, 'Stable', () => this.openBuilding('stable'), false, 'move', 'building', 'stable');
+    this.drawTownActionButton(642, 532, 238, 'Notebook', () => this.openBuilding('notebook'), false, 'support', 'building', 'notebook');
+    this.add.text(642, 580, 'Esc: pause, save, load, and main menu.', {
+      ...textStyle(9, '#d8c7a0'),
       wordWrap: { width: 238 },
+      lineSpacing: 2,
     });
   }
 
   handleEscape() {
+    if (this.audioOptionsState || this.audioOptionsJustClosed) return;
+    if (!this.isTownTutorialActionAllowed('pause')) {
+      this.blockTownTutorialAction();
+      return;
+    }
     if (this.pauseObjects.length) {
       this.closePauseOverlay();
       return;
     }
     this.openPauseMenu();
+    this.completeTownTutorialPauseStep();
   }
 
   clearPauseObjects() {
@@ -279,15 +345,17 @@ export default class HubScene extends BaseScene {
   closePauseOverlay() {
     this.clearPauseObjects();
     this.tweens.resumeAll();
+    this.resumeTownMusic();
     this.drawTownUi();
   }
 
   openPauseMenu() {
     this.clearPauseObjects();
     this.tweens.pauseAll();
+    this.pauseTownMusic();
     const existing = new Set(this.children.list);
     this.add.rectangle(480, 360, 960, 720, palette.shadow, 0.5).setDepth(230).setInteractive();
-    drawPanel(this, 304, 188, 352, 316, 0.97).setDepth(231);
+    drawPanel(this, 304, 166, 352, 366, 0.97).setDepth(231);
     this.add.text(330, 214, 'Paused', titleStyle(28)).setDepth(232);
     this.add.text(330, 254, 'Town actions are stopped until you resume.', {
       ...textStyle(10, '#fff1bf'),
@@ -296,12 +364,74 @@ export default class HubScene extends BaseScene {
     this.drawPauseButton(330, 304, 292, 'Resume', () => this.closePauseOverlay(), true, 'support');
     this.drawPauseButton(330, 352, 292, 'Save Game', () => this.openSaveSlots(), false, 'support');
     this.drawPauseButton(330, 400, 292, 'Load Game', () => this.openLoadSlots(), false, 'stance');
-    this.drawPauseButton(330, 448, 292, 'Main Menu', () => this.scene.start(scenes.TITLE), false, 'attack');
+    this.drawPauseButton(330, 448, 292, 'Options', () => {
+      this.clearPauseObjects();
+      this.openAudioOptions(() => this.openPauseMenu());
+    }, false, 'support');
+    this.drawPauseButton(330, 496, 292, 'Main Menu', () => {
+      this.stopTownMusic();
+      this.scene.start(scenes.TITLE);
+    }, false, 'attack');
     this.capturePauseObjects(existing);
   }
 
   drawPauseButton(x, y, width, label, onClick, primary = false, tone = 'default') {
     drawButton(this, x, y, width, label, onClick, primary, tone).forEach((object) => object.setDepth?.(242));
+  }
+
+  drawTownActionButton(x, y, width, label, onClick, primary = false, tone = 'default', actionType = '', actionId = '', enabled = true) {
+    const allowed = this.isTownTutorialActionAllowed(actionType, actionId);
+    const active = enabled && allowed;
+    const action = active ? onClick : () => this.blockTownTutorialAction();
+    return drawButton(this, x, y, width, label, action, primary && active, tone, { disabled: !active });
+  }
+
+  isTownTutorialActive() {
+    const state = this.getState();
+    return Boolean(state.tutorial?.battleComplete && !state.tutorial?.townComplete);
+  }
+
+  getCurrentTownTutorialStep() {
+    const steps = this.getTownTutorialSteps();
+    return steps[Math.min(this.townTutorialStep, steps.length - 1)];
+  }
+
+  isTownTutorialActionAllowed(actionType = '', actionId = '') {
+    if (!this.isTownTutorialActive()) return true;
+    if (actionType === 'tutorial-next') return true;
+    const action = this.getCurrentTownTutorialStep()?.action;
+    if (!action || !actionType) return false;
+    if (action.type !== actionType) return false;
+    if (action.ids) return action.ids.includes(actionId);
+    if (action.id) return action.id === actionId;
+    return true;
+  }
+
+  blockTownTutorialAction() {
+    if (!this.isTownTutorialActive()) return;
+    this.townTutorialHint = 'Use the highlighted tutorial control first.';
+    this.drawTownUi();
+  }
+
+  completeTownTutorialAction(actionType, actionId = '') {
+    if (!this.isTownTutorialActive()) return false;
+    const action = this.getCurrentTownTutorialStep()?.action;
+    if (!action || action.type !== actionType) return false;
+    if (action.id && action.id !== actionId) return false;
+    if (action.ids && !action.ids.includes(actionId)) return false;
+    if (actionType === 'pause') return false;
+    this.advanceTownTutorial();
+    return true;
+  }
+
+  completeTownTutorialPauseStep() {
+    if (!this.isTownTutorialActive()) return;
+    if (this.getCurrentTownTutorialStep()?.action?.type !== 'pause') return;
+    const state = this.getState();
+    state.tutorial.townComplete = true;
+    state.tutorial.townStep = 0;
+    this.townTutorialStep = 0;
+    this.townTutorialHint = '';
   }
 
   openSaveSlots() {
@@ -346,7 +476,10 @@ export default class HubScene extends BaseScene {
     this.drawSlotMiniButton(x + 378, y + 12, 72, buttonLabel, () => this.handleSlotAction(mode, slot, Boolean(info)), enabled);
     if (!enabled) return;
     row.setInteractive({ useHandCursor: true });
-    row.on('pointerdown', () => this.handleSlotAction(mode, slot, Boolean(info)));
+    row.on('pointerdown', () => {
+      this.playSfx('button-town');
+      this.handleSlotAction(mode, slot, Boolean(info));
+    });
   }
 
   drawSlotMiniButton(x, y, width, label, onClick, enabled) {
@@ -358,7 +491,10 @@ export default class HubScene extends BaseScene {
     bg.setInteractive({ useHandCursor: true });
     bg.on('pointerover', () => bg.setFillStyle(palette.yellow, 1));
     bg.on('pointerout', () => bg.setFillStyle(base, 1));
-    bg.on('pointerdown', onClick);
+    bg.on('pointerdown', () => {
+      this.playSfx('button-town');
+      onClick();
+    });
   }
 
   handleSlotAction(mode, slot, occupied) {
@@ -409,23 +545,92 @@ export default class HubScene extends BaseScene {
     return [
       {
         title: 'Town Tutorial',
-        body: 'Tumbleweed Crossing is your hub between fights. The town stays active while the right panel changes.',
+        body: 'Tumbleweed Crossing is the hub between fights. Use the town doors to manage work, supplies, healing, party builds, and reference notes before riding out.',
       },
       {
         title: 'Sheriff Station',
-        body: 'Visit the Sheriff to inspect and accept bounties. Accepting work does not force you out of town; Ride to Bounty starts travel.',
+        body: 'The Sheriff handles bounty work. Accept Bounty marks the contract, raises Wanted heat, and keeps you in town. Ride to Bounty leaves town and starts travel.',
+        building: 'town',
+        action: { type: 'building', id: 'sheriff' },
       },
       {
-        title: 'General Store',
-        body: 'Buy individual supplies, bandages, canteens, and whiskey from limited stock. Choose only what the route needs.',
+        title: 'Bounties',
+        body: 'Bounty cards list target, pay, bonus objective, and heat risk. Active bounties carry into travel until completed or replaced by later route choices.',
+        building: 'sheriff',
+        action: { type: 'bounty' },
       },
       {
-        title: 'Saloon And Stable',
-        body: 'The Saloon restores crew HP. The Stable opens party setup for weapons, traits, horses, stances, and synergy.',
+        title: 'General Store: Supplies',
+        body: 'Trail Supplies are route materials. Careful travel can spend them to avoid the worst trail events, protect HP, and keep route pressure manageable.',
+        highlight: 'Loaded wagons are tempting. Carrying lots of supplies can draw raiders onto the trail.',
+        building: 'store',
+        action: { type: 'buy', ids: ['supplies'] },
       },
       {
-        title: 'Saving',
-        body: 'Use Save Game in town or the pause menu to store progress in one of three browser save slots.',
+        title: 'General Store: Medicine',
+        body: 'Bandages heal HP and clear Bleeding Out. Canteens clear Sunstroke, Dust-Choked, and Fatigue. These are the safest recovery purchases.',
+        building: 'store',
+        action: { type: 'buy', ids: ['bandage', 'canteen'] },
+      },
+      {
+        title: 'General Store: Whiskey',
+        body: 'Whiskey applies Whiskey-Dazed and Wanted. It can create risky damage tempo, but Wanted makes enemies prefer that rider and raises danger.',
+        building: 'store',
+        action: { type: 'buy', ids: ['whiskey'] },
+      },
+      {
+        title: 'Saloon',
+        body: 'The Saloon rests the crew for money. Use it when HP is low before a route or bounty. It is town recovery, not a combat action.',
+        building: 'saloon',
+        action: { type: 'rest' },
+      },
+      {
+        title: 'Stable',
+        body: 'The Stable opens Prepare Party. This is where you tune weapons, rider stances, horses, horse stances, combat traits, bond traits, and party synergy.',
+        building: 'stable',
+        action: { type: 'prepare' },
+      },
+      {
+        title: 'Rider Cards',
+        body: 'Each rider card shows talent, equipped weapon, stance, horse, bond, HP, and trait identity. View Build opens the detailed setup for that rider.',
+        building: 'stable',
+      },
+      {
+        title: 'Weapons And Stances',
+        body: 'Arm changes the weapon role. Style changes rider stance: Gunslinger, Sharpshooter, Wrangler, Outlaw, or Iron Rider. These shape range, ATB, defense, lanes, and damage.',
+        building: 'stable',
+      },
+      {
+        title: 'Horses',
+        body: 'Horse changes the assigned mount. Mounted riders gain horse actions and combos. Horse Style changes behavior such as Stampede, Sprint, Defensive Guard, Calm Focus, or Wild Frenzy.',
+        building: 'stable',
+      },
+      {
+        title: 'Traits',
+        body: 'Combat traits and bond traits add passive effects and tags. Tags feed party synergy, while individual traits improve specific weapons, statuses, movement, healing, or defense.',
+        building: 'stable',
+      },
+      {
+        title: 'Horse Bonds',
+        body: 'Horse bond is tracked per horse. Bond improves mounted performance and rewards using the same mount across fights.',
+        building: 'stable',
+      },
+      {
+        title: 'Posse Synergy',
+        body: 'The synergy panel shows the crew-wide identity formed by weapons, stances, horses, and trait tags. Ride Out locks the prepared synergy for the next trail.',
+        building: 'stable',
+      },
+      {
+        title: 'Notebook',
+        body: 'The Notebook on the street is a permanent reference. It groups reminders under broad topics like Combat, Status Effects, Movement, Posse Synergy, and Resources.',
+        building: 'town',
+        action: { type: 'building', id: 'notebook' },
+      },
+      {
+        title: 'Pause Menu',
+        body: 'Press Esc in town for Resume, Save Game, Load Game, and Main Menu. Save and load stay in the pause menu; town doors stay focused on play systems.',
+        building: 'town',
+        action: { type: 'pause' },
       },
     ];
   }
@@ -434,22 +639,113 @@ export default class HubScene extends BaseScene {
     if (!state.tutorial?.battleComplete || state.tutorial?.townComplete) return;
     const steps = this.getTownTutorialSteps();
     const step = steps[Math.min(this.townTutorialStep, steps.length - 1)];
-    drawPanel(this, 64, 600, 500, 98, 0.95);
-    this.add.text(84, 614, step.title, labelStyle(14, '#fff8e7'));
-    this.add.text(84, 638, step.body, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 330 }, lineSpacing: 2 });
-    drawButton(this, 446, 644, 94, this.townTutorialStep >= steps.length - 1 ? 'Done' : 'Next', () => this.advanceTownTutorial(), true, 'support');
+    const panelX = 54;
+    const panelY = 574;
+    const panelW = 530;
+    const panelH = 128;
+    drawPanel(this, panelX, panelY, panelW, panelH, 0.95).setDepth(210);
+    this.add.text(panelX + 24, panelY + 16, step.title, labelStyle(14, '#fff8e7')).setDepth(211);
+    this.add.text(panelX + 24, panelY + 40, step.body, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 362 }, lineSpacing: 2 }).setDepth(211);
+    if (step.highlight) {
+      this.add.text(panelX + 24, panelY + 82, step.highlight, { ...labelStyle(9, '#f0c24f'), wordWrap: { width: 362 }, lineSpacing: 1 }).setDepth(211);
+    }
+    this.add.text(panelX + 24, panelY + 100, `${Math.min(this.townTutorialStep + 1, steps.length)}/${steps.length}`, labelStyle(8, '#d8c7a0')).setDepth(211);
+    if (this.townTutorialHint) {
+      this.add.text(panelX + 96, panelY + 99, this.townTutorialHint, { ...labelStyle(8, '#f5a08a'), wordWrap: { width: 250 } }).setDepth(211);
+    }
+    const point = this.getTownTutorialPoint(step);
+    if (point) {
+      const arrow = this.add.graphics().setDepth(211);
+      this.drawTownTutorialArrow(arrow, panelX + panelW - 32, panelY + panelH / 2, point.x, point.y);
+    }
+    drawButton(
+      this,
+      panelX + 408,
+      panelY + 74,
+      94,
+      this.townTutorialStep >= steps.length - 1 ? 'Done' : 'Next',
+      () => this.advanceTownTutorial(),
+      true,
+      'support',
+      { sound: 'button-town' },
+    ).forEach((object) => object.setDepth?.(212));
   }
 
   advanceTownTutorial() {
     const steps = this.getTownTutorialSteps();
+    this.townTutorialHint = '';
+    const state = this.getState();
     if (this.townTutorialStep >= steps.length - 1) {
-      const state = this.getState();
       state.tutorial.townComplete = true;
+      state.tutorial.townStep = 0;
       this.drawTownUi(state);
       return;
     }
     this.townTutorialStep += 1;
+    state.tutorial.townStep = this.townTutorialStep;
+    const step = steps[Math.min(this.townTutorialStep, steps.length - 1)];
+    this.applyTownTutorialView(step);
     this.drawTownUi();
+  }
+
+  applyTownTutorialView(step = this.getCurrentTownTutorialStep()) {
+    if (!step) return;
+    if (step.building) {
+      this.activeBuilding = step.building;
+      if (step.building !== 'notebook') {
+        this.notebookCategory = null;
+        this.notebookTopic = null;
+      }
+      return;
+    }
+    if (step.action?.type === 'building' || step.action?.type === 'pause' || !step.action) {
+      this.activeBuilding = 'town';
+      this.notebookCategory = null;
+      this.notebookTopic = null;
+    }
+  }
+
+  getTownTutorialPoint(step) {
+    const action = step?.action;
+    if (!action) return { x: 508, y: 667 };
+    if (action.type === 'building') {
+      return {
+        sheriff: { x: 761, y: 359 },
+        store: { x: 761, y: 407 },
+        saloon: { x: 761, y: 455 },
+        stable: { x: 761, y: 503 },
+        notebook: { x: 761, y: 551 },
+        town: { x: 689, y: 581 },
+      }[action.id] || { x: 761, y: 359 };
+    }
+    if (action.type === 'buy') {
+      const first = action.ids?.[0];
+      return {
+        supplies: { x: 860, y: 276 },
+        bandage: { x: 860, y: 334 },
+        canteen: { x: 860, y: 392 },
+        whiskey: { x: 860, y: 450 },
+      }[first] || { x: 860, y: 276 };
+    }
+    if (action.type === 'bounty' || action.type === 'rest' || action.type === 'prepare') return { x: 760, y: 525 };
+    if (action.type === 'pause') return { x: 760, y: 586 };
+    return { x: 508, y: 667 };
+  }
+
+  drawTownTutorialArrow(arrow, startX, startY, endX, endY) {
+    const angle = Math.atan2(endY - startY, endX - startX);
+    const headLength = 14;
+    const headWidth = 9;
+    const lineEndX = endX - Math.cos(angle) * headLength;
+    const lineEndY = endY - Math.sin(angle) * headLength;
+    const leftX = lineEndX + Math.cos(angle + Math.PI / 2) * headWidth;
+    const leftY = lineEndY + Math.sin(angle + Math.PI / 2) * headWidth;
+    const rightX = lineEndX + Math.cos(angle - Math.PI / 2) * headWidth;
+    const rightY = lineEndY + Math.sin(angle - Math.PI / 2) * headWidth;
+    arrow.lineStyle(3, palette.yellow, 0.86);
+    arrow.lineBetween(startX, startY, lineEndX, lineEndY);
+    arrow.fillStyle(palette.yellow, 0.92);
+    arrow.fillTriangle(endX, endY, leftX, leftY, rightX, rightY);
   }
 
   drawTownStatusCard(x, y, state) {
@@ -461,6 +757,11 @@ export default class HubScene extends BaseScene {
   }
 
   drawBuildingInterior(state) {
+    if (this.activeBuilding === 'notebook') {
+      this.drawNotebookInterior();
+      return;
+    }
+
     const content = {
       sheriff: {
         title: 'Sheriff Station',
@@ -493,12 +794,151 @@ export default class HubScene extends BaseScene {
     this.add.text(626, 138, content.title, titleStyle(24));
     this.add.text(626, 170, content.subtitle, { ...textStyle(12, '#e2d9bd'), wordWrap: { width: 268 }, lineSpacing: 3 });
     content.body();
-    drawButton(this, 626, 562, 126, 'Street', () => this.openBuilding('town'));
+    this.drawTownActionButton(626, 562, 126, 'Street', () => this.openBuilding('town'), false, 'default', 'building', 'town');
+  }
+
+  getNotebookCategories() {
+    return [
+      {
+        id: 'combat',
+        title: 'Combat',
+        subtitle: 'ATB, attacks, cover, and enemy intent.',
+        topics: [
+          ['ATB Flow', 'Riders act at 100% ATB. Most commands spend the turn, while some skills or horse actions leave a little ATB behind.'],
+          ['Target Preview', 'Before confirming an attack, read damage, hit chance, crit chance, status, range, cover, and lane modifiers.'],
+          ['Cover', 'Cover blocks lines and reduces incoming shots for unmounted riders. It has HP and can be damaged or destroyed.'],
+          ['Enemy Intent', 'Enemies show intent before firing. Use movement, cover, status, or attacks to interrupt or soften the incoming action.'],
+          ['Showdown Combo', 'Mounted riders can spend Showdown for a combo burst. It is powerful, but costs Showdown and usually resets tempo.'],
+        ],
+      },
+      {
+        id: 'status',
+        title: 'Status Effects',
+        subtitle: 'Bleed, Marked, Panic, Dust, and recovery states.',
+        topics: [
+          ['Bleeding Out', 'Bleeding units lose HP over time and worsen when acting. Bandages clear it.'],
+          ['Marked', 'Marked enemies take stronger focused pressure and work well with precision builds.'],
+          ['Horse Panic', 'Panic disables mounted skills and can make a horse bolt. Calm Focus, trusted mounts, and defensive play help recovery.'],
+          ['Dust-Choked And Snared', 'Dust weakens ranged pressure. Snare slows ATB and makes enemies easier to control.'],
+          ['Grit And Fatigue', 'Grit prevents one fall, then usually leaves Fatigue. Fatigue slows ATB after the burst.'],
+        ],
+      },
+      {
+        id: 'movement',
+        title: 'Movement',
+        subtitle: 'Lanes, elevation, move cost, and mounted pressure.',
+        topics: [
+          ['Lanes', 'Lane labels depend on side. Front, Mid, and Back affect weapon strength, targeting, and enemy pressure.'],
+          ['Elevation', 'High ground improves angles and some attacks. Low ground is riskier and can make rush damage worse.'],
+          ['Move Cost', 'Terrain changes movement cost. Mounted riders move efficiently, but mud and hazards can punish careless paths.'],
+          ['Mounted Actions', 'Charge, Ride-By, and Trample create pressure, Panic, or tempo. Horse Panic blocks mounted actions.'],
+          ['Field Intel', 'Select any tile or unit to inspect lane, elevation, cover, move cost, statuses, and ATB.'],
+        ],
+      },
+      {
+        id: 'synergy',
+        title: 'Posse Synergy',
+        subtitle: 'Crew identity, base effects, and surge states.',
+        topics: [
+          ['Party Synergy', 'Prepared weapons, stances, traits, and horses choose one active posse identity before battle.'],
+          ['Base Effects', 'The active posse identity stays stable in battle. Brief stance changes do not remove the base bonus.'],
+          ['Surge States', 'Surges build momentum from aligned play and fade when the crew stops coordinating. They do not replace the base identity.'],
+          ['The Stampede', 'Mounted movement costs less ATB. Surge by committing mounted allies forward, then use Charge to create Panic and pushback.'],
+          ['Deadeye Posse', 'Marked enemies are easier to crit. Focus fire with precision stances to pressure marked targets through cover.'],
+          ['Defensive Synergies', 'Frontier Survivors and Trail Wardens help with Panic recovery, guarding, cover durability, and formation defense.'],
+        ],
+      },
+      {
+        id: 'resources',
+        title: 'Resources',
+        subtitle: 'Items, town prep, and route pressure.',
+        topics: [
+          ['Items', 'Bandages heal and clear Bleeding Out. Canteens clear heat and dust. Whiskey adds risk and power.'],
+          ['Wanted', 'Wanted increases risk and enemy pressure, but some outlaw builds turn that danger into damage or tempo.'],
+          ['Supplies', 'Supplies are route materials spent by careful travel to reduce danger. A well-stocked wagon helps, but it can also attract raiders.'],
+          ['Prepare Party', 'Use the Stable to change weapons, rider stances, horse stances, horses, and traits before battle.'],
+          ['Bounties', 'The Sheriff starts bounty work. Accepting a bounty raises heat, then Ride to Bounty starts travel.'],
+        ],
+      },
+    ];
+  }
+
+  getNotebookCategory(categoryId) {
+    return this.getNotebookCategories().find((category) => category.id === categoryId);
+  }
+
+  drawNotebookInterior() {
+    drawPanel(this, 132, 112, 696, 500, 0.98);
+    this.add.rectangle(158, 134, 644, 5, palette.pale, 0.95).setOrigin(0);
+    this.add.text(160, 152, 'Notebook', titleStyle(28));
+    this.add.text(160, 188, 'Choose one section, then one note to read.', { ...textStyle(12, '#e2d9bd'), wordWrap: { width: 520 }, lineSpacing: 3 });
+    this.drawTownActionButton(668, 552, 126, 'Street', () => this.openBuilding('town'), false, 'default', 'building', 'town');
+
+    if (!this.notebookCategory) {
+      this.add.text(160, 232, 'Sections', labelStyle(12, '#f5df9b'));
+      this.getNotebookCategories().forEach((category, index) => {
+        const column = index % 2;
+        const row = Math.floor(index / 2);
+        const x = 160 + column * 320;
+        const y = 262 + row * 78;
+        this.add.rectangle(x, y, 292, 58, palette.shadow, 0.34).setOrigin(0).setStrokeStyle(1, palette.pale, 0.22);
+        this.add.text(x + 14, y + 9, category.title, labelStyle(13, '#fff8e7'));
+        this.add.text(x + 14, y + 30, category.subtitle, { ...textStyle(9, '#d8c7a0'), wordWrap: { width: 186 } });
+        this.drawTownActionButton(x + 214, y + 10, 62, 'Open', () => {
+          this.notebookCategory = category.id;
+          this.notebookTopic = null;
+          this.drawTownUi();
+        }, false, 'support', 'notebook-section', category.id);
+      });
+      return;
+    }
+
+    const category = this.getNotebookCategory(this.notebookCategory);
+    if (!category) {
+      this.notebookCategory = null;
+      this.notebookTopic = null;
+      this.drawTownUi();
+      return;
+    }
+
+    this.drawTownActionButton(160, 228, 112, 'Sections', () => {
+      this.notebookCategory = null;
+      this.notebookTopic = null;
+      this.drawTownUi();
+    }, false, 'default', 'notebook-section', 'sections');
+    this.add.text(292, 236, category.title, titleStyle(22));
+    this.add.text(292, 268, category.subtitle, { ...textStyle(10, '#d8c7a0'), wordWrap: { width: 480 } });
+
+    category.topics.forEach(([title], index) => {
+      const y = 314 + index * 42;
+      const selected = this.notebookTopic === index;
+      const bg = this.add.rectangle(160, y, 238, 32, selected ? palette.yellow : palette.shadow, selected ? 0.9 : 0.32).setOrigin(0);
+      bg.setStrokeStyle(1, selected ? palette.shadow : palette.pale, selected ? 0.82 : 0.18);
+      this.add.text(172, y + 8, title, labelStyle(10, selected ? '#241914' : '#fff8e7'));
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerdown', () => {
+        this.playSfx('button-town');
+        this.notebookTopic = index;
+        this.drawTownUi();
+      });
+    });
+
+    const selectedTopic = category.topics[this.notebookTopic ?? 0];
+    if (this.notebookTopic === null) {
+      this.add.rectangle(432, 314, 344, 194, palette.shadow, 0.28).setOrigin(0).setStrokeStyle(1, palette.pale, 0.18);
+      this.add.text(454, 338, 'Select a note.', titleStyle(20));
+      this.add.text(454, 376, 'Click a topic on the left to read one notebook entry at a time.', { ...textStyle(12, '#fff1bf'), wordWrap: { width: 286 }, lineSpacing: 4 });
+      return;
+    }
+    this.add.rectangle(432, 314, 344, 194, palette.shadow, 0.34).setOrigin(0).setStrokeStyle(1, palette.pale, 0.24);
+    this.add.text(454, 338, selectedTopic[0], titleStyle(21));
+    this.add.text(454, 382, selectedTopic[1], { ...textStyle(13, '#fff1bf'), wordWrap: { width: 286 }, lineSpacing: 5 });
   }
 
   drawSheriffInterior(state) {
     const bounty = bountyContracts.redSashRifleman;
     const active = state.bountyActive;
+    const captured = state.capturedBounties?.[0];
     this.drawInfoRows(626, 220, [
       ['POSTER', active ? 'Accepted' : 'Available'],
       ['TARGET', bounty.targetName],
@@ -506,18 +946,48 @@ export default class HubScene extends BaseScene {
       ['BONUS', bounty.optional],
       ['HEAT', `Wanted +1 on acceptance`],
     ]);
-    this.add.text(626, 430, bounty.description, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
-    drawButton(this, 626, 506, 268, active ? 'Ride to Bounty' : 'Accept Bounty', () => {
+    this.add.text(626, 430, captured ? `Captured: ${captured.name}. Turn in the bounty before riding out again.` : bounty.description, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
+    if (captured) {
+      this.drawTownActionButton(626, 506, 268, `Turn In ${captured.name}`, () => this.turnInCapturedBounty(captured.id), true, 'attack');
+      return;
+    }
+    this.drawTownActionButton(626, 506, 268, active ? 'Ride to Bounty' : 'Accept Bounty', () => {
       if (!active) {
         state.bountyActive = true;
         state.activeBountyId = bounty.id;
         state.wanted += 1;
+        if (this.completeTownTutorialAction('bounty')) return;
+        this.drawTownUi(state);
+        return;
+      }
+      if (this.completeTownTutorialAction('bounty')) return;
+      if (this.hasCapturedBounty()) {
+        this.saveMessage = 'Turn in your captured bounty at the Sheriff Station before leaving town.';
         this.drawTownUi(state);
         return;
       }
       state.preparedSynergy = null;
+      this.beginTrailLedger();
+      this.stopTownMusic();
       this.scene.start(scenes.TRAVEL);
-    }, true, 'attack');
+    }, true, 'attack', 'bounty');
+  }
+
+  turnInCapturedBounty(capturedId) {
+    const state = this.getState();
+    const captured = state.capturedBounties?.find((entry) => entry.id === capturedId);
+    if (!captured) return;
+    state.money += captured.reward;
+    state.capturedBounties = state.capturedBounties.filter((entry) => entry.id !== capturedId);
+    state.lastTrailReport = {
+      money: captured.reward,
+      supplies: 0,
+      items: [],
+      captured: [],
+      note: `Turned in ${captured.name} for $${captured.reward}.`,
+    };
+    this.saveCurrentProgress();
+    this.drawTownUi(state);
   }
 
   drawStoreInterior(state) {
@@ -525,12 +995,12 @@ export default class HubScene extends BaseScene {
     this.add.text(626, 218, `Money $${state.money}`, labelStyle(13, '#bff0a7'));
     this.add.text(762, 219, `Your pack: ${this.getItemSummary(state)}`, textStyle(9, '#d8c7a0'));
     this.getStoreCatalog().forEach((item, index) => this.drawStoreItemRow(626, 250 + index * 58, item, state));
-    this.add.text(626, 492, 'Stock is limited in each town stop. Buy what the route needs.', { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
+    this.add.text(626, 492, 'Stock is limited in each town stop. Supplies help manage trail danger, but heavy wagons can attract raiders.', { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
   }
 
   getStoreCatalog() {
     return [
-      { id: 'supplies', name: 'Trail Supplies', price: 6, detail: '+1 route supply', tone: 'support' },
+      { id: 'supplies', name: 'Trail Supplies', price: 6, detail: 'Spend on safer travel', tone: 'support' },
       { id: 'bandage', name: 'Bandage', price: 8, detail: 'Heal and stop bleeding', tone: 'support' },
       { id: 'canteen', name: 'Canteen', price: 7, detail: 'Clear heat and dust', tone: 'support' },
       { id: 'whiskey', name: 'Whiskey', price: 10, detail: 'Risky grit and heat', tone: 'attack' },
@@ -546,10 +1016,14 @@ export default class HubScene extends BaseScene {
     this.add.text(x + 10, y + 24, item.detail, textStyle(8, '#d8c7a0'));
     this.add.text(x + 132, y + 7, `$${item.price}`, labelStyle(10, '#bff0a7'));
     this.add.text(x + 132, y + 24, `Stock ${stock} / Own ${owned}`, textStyle(8, '#d8c7a0'));
-    drawButton(this, x + 212, y + 7, 44, 'Buy', () => this.buyStoreItem(item), canBuy, item.tone);
+    this.drawTownActionButton(x + 212, y + 7, 44, 'Buy', () => this.buyStoreItem(item), canBuy, item.tone, 'buy', item.id, canBuy);
   }
 
   buyStoreItem(item) {
+    if (!this.isTownTutorialActionAllowed('buy', item.id)) {
+      this.blockTownTutorialAction();
+      return;
+    }
     const state = this.getState();
     state.storeStock ||= this.createStoreStock();
     if ((state.storeStock[item.id] || 0) <= 0 || state.money < item.price) return;
@@ -557,6 +1031,7 @@ export default class HubScene extends BaseScene {
     state.storeStock[item.id] -= 1;
     if (item.id === 'supplies') state.supplies += 1;
     else state.items[item.id] = (state.items[item.id] || 0) + 1;
+    if (this.completeTownTutorialAction('buy', item.id)) return;
     this.drawTownUi(state);
   }
 
@@ -575,12 +1050,13 @@ export default class HubScene extends BaseScene {
       this.add.text(800, y + 4, `${rider.hp}/${rider.maxHp}`, labelStyle(8, wounded ? '#f5a08a' : '#bff0a7'));
     });
     this.add.text(626, 456, 'A night upstairs clears injuries and gets the posse back on its feet.', { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
-    drawButton(this, 626, 506, 268, 'Rest Crew ($20)', () => {
+    this.drawTownActionButton(626, 506, 268, 'Rest Crew ($20)', () => {
       if (state.money < 20) return;
       state.money -= 20;
       restoreParty(state.party);
+      if (this.completeTownTutorialAction('rest')) return;
       this.drawTownUi(state);
-    }, true, 'support');
+    }, true, 'support', 'rest', '', state.money >= 20);
   }
 
   drawStableInterior(state) {
@@ -592,7 +1068,14 @@ export default class HubScene extends BaseScene {
       ['SETUP', 'Weapons / horses / traits'],
     ]);
     this.add.text(626, 404, 'Use the stable to tune the party before riding out.', { ...textStyle(10, '#fff1bf'), wordWrap: { width: 268 }, lineSpacing: 3 });
-    drawButton(this, 626, 506, 268, 'Prepare Party', () => this.scene.start(scenes.PREP), true, 'move');
+    this.drawTownActionButton(626, 506, 268, 'Prepare Party', () => {
+      this.completeTownTutorialAction('prepare');
+      this.scene.start(scenes.PREP);
+    }, true, 'move', 'prepare');
+  }
+
+  hasCapturedBounty() {
+    return Boolean(this.getState().capturedBounties?.length);
   }
 
   drawInfoRows(x, y, rows) {
@@ -612,7 +1095,10 @@ export default class HubScene extends BaseScene {
     const body = this.add.image(x, y, `town-building-${type}`).setDepth(4).setInteractive({ useHandCursor: true });
     body.on('pointerover', () => body.setTint(0xffe6a6));
     body.on('pointerout', () => body.clearTint());
-    body.on('pointerdown', onClick);
+    body.on('pointerdown', () => {
+      this.playSfx('button-town');
+      onClick();
+    });
     this.add.text(x, y - 8, label, {
       ...labelStyle(12, '#fff8e7'),
       wordWrap: { width: width - 18 },

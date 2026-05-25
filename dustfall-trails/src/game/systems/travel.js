@@ -31,7 +31,5 @@ export function resolveTravelChoice(state, risky) {
 }
 
 export function chooseBountyEncounter(state) {
-  const routeIndex = state.routeProgress >= 66 ? 1 : 0;
-  const heatIndex = Math.min(travelEncounters.length - 1, Math.floor(state.wanted / 2));
-  state.nextEncounterId = travelEncounters[Math.max(routeIndex, heatIndex)];
+  state.nextEncounterId = 'redSashRiflemanBounty';
 }

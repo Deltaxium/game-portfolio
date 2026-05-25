@@ -7,6 +7,7 @@ import marshalUrl from './marshal.svg?url';
 import medicUrl from './medic.svg?url';
 import raiderUrl from './red-sash-raider.svg?url';
 import riflemanUrl from './canyon-rifleman.svg?url';
+import wagonUrl from './wagon.png?url';
 
 export const spriteAssets = [
   { key: 'sprite-marshal', url: marshalUrl, width: 96, height: 96 },
@@ -18,6 +19,7 @@ export const spriteAssets = [
   { key: 'sprite-raider', url: raiderUrl, width: 96, height: 96 },
   { key: 'sprite-rifleman', url: riflemanUrl, width: 96, height: 96 },
   { key: 'sprite-bruiser', url: bruiserUrl, width: 96, height: 96 },
+  { key: 'sprite-supply-wagon', url: wagonUrl, type: 'image' },
 ];
 
 export const partySpriteKeys = {
@@ -30,10 +32,18 @@ export const enemySpriteKeys = {
   raider: 'sprite-raider',
   rifleman: 'sprite-rifleman',
   bruiser: 'sprite-bruiser',
+  scout: 'sprite-raider',
+  sapper: 'sprite-bruiser',
 };
 
-export const horseSpriteKeys = {
+export const horseSourceSpriteKeys = {
   comet: 'sprite-horse-comet',
   'brass-hoof': 'sprite-horse-brass-hoof',
   'ghost-pepper': 'sprite-horse-ghost-pepper',
+};
+
+export const horseSpriteKeys = {
+  comet: 'sprite-horse-comet-cutout',
+  'brass-hoof': 'sprite-horse-brass-hoof-cutout',
+  'ghost-pepper': 'sprite-horse-ghost-pepper-cutout',
 };

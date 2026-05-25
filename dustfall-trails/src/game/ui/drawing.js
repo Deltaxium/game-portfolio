@@ -49,7 +49,7 @@ export function drawPanel(scene, x, y, width, height, alpha = 0.94) {
   return graphics;
 }
 
-export function drawButton(scene, x, y, width, label, onClick, primary = false, tone = 'default') {
+export function drawButton(scene, x, y, width, label, onClick, primary = false, tone = 'default', options = {}) {
   const tones = {
     attack: { base: palette.red, hover: 0xd35a43 },
     move: { base: palette.green, hover: 0x7fba61 },
@@ -57,25 +57,29 @@ export function drawButton(scene, x, y, width, label, onClick, primary = false, 
     support: { base: palette.brown, hover: palette.leather },
     default: { base: palette.brown, hover: palette.leather },
   };
+  const disabled = Boolean(options.disabled);
   const selectedTone = tones[tone] || tones.default;
-  const baseColor = primary ? palette.pale : selectedTone.base;
-  const hoverColor = primary ? palette.yellow : selectedTone.hover;
-  const textColor = primary ? '#241914' : '#fff8e7';
-  const shadow = scene.add.rectangle(x + 3, y + 4, width, 38, palette.shadow, 0.58).setOrigin(0);
-  const bg = scene.add.rectangle(x, y, width, 38, baseColor, 1).setOrigin(0);
-  bg.setStrokeStyle(2, primary ? palette.shadow : palette.pale, primary ? 0.9 : 0.68);
-  bg.setInteractive({ useHandCursor: true });
-  const highlight = scene.add.rectangle(x + 5, y + 5, width - 10, 2, palette.white, primary ? 0.36 : 0.22).setOrigin(0);
+  const baseColor = disabled ? 0x4f4639 : primary ? palette.pale : selectedTone.base;
+  const hoverColor = disabled ? baseColor : primary ? palette.yellow : selectedTone.hover;
+  const textColor = disabled ? '#b7ac94' : primary ? '#241914' : '#fff8e7';
+  const shadow = scene.add.rectangle(x + 3, y + 4, width, 38, palette.shadow, disabled ? 0.34 : 0.58).setOrigin(0);
+  const bg = scene.add.rectangle(x, y, width, 38, baseColor, disabled ? 0.72 : 1).setOrigin(0);
+  bg.setStrokeStyle(2, disabled ? palette.shadow : primary ? palette.shadow : palette.pale, disabled ? 0.72 : primary ? 0.9 : 0.68);
+  bg.setInteractive({ useHandCursor: !disabled });
+  const highlight = scene.add.rectangle(x + 5, y + 5, width - 10, 2, palette.white, disabled ? 0.08 : primary ? 0.36 : 0.22).setOrigin(0);
   const text = scene.add
     .text(x + width / 2, y + 19, label, {
       ...labelStyle(13, textColor),
       align: 'center',
     })
     .setOrigin(0.5);
-  bg.on('pointerover', () => bg.setFillStyle(hoverColor, 1));
-  bg.on('pointerout', () => bg.setFillStyle(baseColor, 1));
+  text.setAlpha(disabled ? 0.72 : 1);
+  bg.on('pointerover', () => bg.setFillStyle(hoverColor, disabled ? 0.72 : 1));
+  bg.on('pointerout', () => bg.setFillStyle(baseColor, disabled ? 0.72 : 1));
   bg.on('pointerdown', () => {
-    bg.setFillStyle(palette.shadow, 1);
+    bg.setFillStyle(disabled ? baseColor : palette.shadow, disabled ? 0.72 : 1);
+    const defaultClick = scene.scene?.key === 'BattleScene' ? 'button-battle' : 'button-town';
+    scene.playSfx?.(options.sound || defaultClick);
     onClick();
   });
   return [shadow, bg, highlight, text];

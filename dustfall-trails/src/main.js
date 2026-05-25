@@ -4,15 +4,16 @@ import HubScene from './game/scenes/HubScene.js';
 import PrepScene from './game/scenes/PrepScene.js';
 import TitleScene from './game/scenes/TitleScene.js';
 import TravelScene from './game/scenes/TravelScene.js';
-import { createInitialGameState } from './game/systems/save.js';
+import { createInitialGameState, loadAutoGame } from './game/systems/save.js';
 
-const gameState = createInitialGameState();
+const gameState = loadAutoGame() || createInitialGameState();
 
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game-root',
   width: 960,
   height: 720,
+  pauseOnBlur: false,
   resolution: Math.min(window.devicePixelRatio || 1, 2),
   backgroundColor: '#241914',
   render: {

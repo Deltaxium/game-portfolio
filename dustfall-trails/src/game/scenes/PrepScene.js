@@ -1,6 +1,6 @@
 import { horseSpriteKeys, partySpriteKeys } from '../assets/sprites/index.js';
 import { horseCatalog, horseStances, palette, riderStances, scenes, weaponCatalog } from '../config/gameData.js';
-import { getPartySynergy } from '../systems/synergy.js';
+import { getPartySynergy, partySynergyDefinitions } from '../systems/synergy.js';
 import { drawButton, drawPanel, labelStyle, textStyle, titleStyle } from '../ui/drawing.js';
 import BaseScene from './BaseScene.js';
 
@@ -14,7 +14,11 @@ export default class PrepScene extends BaseScene {
     this.selectedRider = 0;
     this.viewMode = 'overview';
     this.floatingUi = [];
+    this.partyTutorialObjects = [];
+    this.partyTutorialStep = 0;
+    this.partyTutorialKey = '';
     this.normalizeHorseAssignments();
+    this.startTownMusic();
     this.draw();
   }
 
@@ -43,6 +47,7 @@ export default class PrepScene extends BaseScene {
     this.drawPrepStats(state);
     if (this.viewMode === 'detail') this.drawRiderDetail(state.party[this.selectedRider]);
     else this.drawOverview(state.party);
+    this.drawPartyMenuTutorial();
   }
 
   transitionTo(mode, riderIndex = this.selectedRider) {
@@ -53,6 +58,105 @@ export default class PrepScene extends BaseScene {
       this.draw();
       this.cameras.main.fadeIn(110, 7, 3, 2);
     });
+  }
+
+  shouldShowPartyMenuTutorial() {
+    const tutorial = this.getState().tutorial;
+    return tutorial?.battleComplete && !tutorial?.skipped && !tutorial?.partyMenusComplete;
+  }
+
+  getPartyMenuTutorialSteps() {
+    return [
+      {
+        key: 'overview',
+        title: 'Party Overview',
+        body: 'Each rider card summarizes talent, weapon, stance, horse, bond, and traits. Open View Build to tune one character.',
+        point: { x: 158, y: 568 },
+        view: 'overview',
+      },
+      {
+        key: 'build',
+        title: 'Build Core',
+        body: 'Arm, Horse, Style, and Horse Style are clickable menus. These choices shape lane strength, ATB flow, combos, and survival.',
+        point: { x: 490, y: 244 },
+        view: 'detail',
+      },
+      {
+        key: 'traits',
+        title: 'Traits',
+        body: 'Combat traits and bond traits add tags and passive effects. Trait tags feed party synergy and rider identity.',
+        point: { x: 780, y: 284 },
+        view: 'detail',
+      },
+      {
+        key: 'synergy',
+        title: 'Posse Synergy',
+        body: 'The synergy panel shows the active party effect. Change weapons, stances, horses, or traits to form a stronger posse plan.',
+        point: { x: 430, y: 666 },
+        view: 'detail',
+      },
+      {
+        key: 'ride',
+        title: 'Ride Out',
+        body: 'Ride Out locks in prepared synergy and starts the trail. Back to Town returns without leaving.',
+        point: { x: 782, y: 666 },
+        view: 'detail',
+      },
+    ];
+  }
+
+  drawPartyMenuTutorial() {
+    if (!this.shouldShowPartyMenuTutorial()) return;
+    const steps = this.getPartyMenuTutorialSteps();
+    const step = steps[Math.min(this.partyTutorialStep, steps.length - 1)];
+    if (!step || step.view !== this.viewMode) return;
+    const existing = new Set(this.children.list);
+    const panelX = 42;
+    const panelY = 90;
+    drawPanel(this, panelX, panelY, 372, 128, 0.95).setDepth(210);
+    this.add.text(panelX + 20, panelY + 16, step.title, titleStyle(18)).setDepth(211);
+    this.add.text(panelX + 20, panelY + 46, step.body, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 320 }, lineSpacing: 2 }).setDepth(211);
+    const arrow = this.add.graphics().setDepth(211);
+    arrow.lineStyle(3, palette.yellow, 0.86);
+    arrow.lineBetween(panelX + 344, panelY + 66, step.point.x, step.point.y);
+    arrow.fillStyle(palette.yellow, 0.9);
+    arrow.fillTriangle(step.point.x, step.point.y, step.point.x - 8, step.point.y - 5, step.point.x - 5, step.point.y + 8);
+    const nextLabel = this.partyTutorialStep >= steps.length - 1 ? 'Done' : 'Next';
+    const next = drawButton(this, panelX + 244, panelY + 82, 112, nextLabel, () => this.advancePartyMenuTutorial(), true, 'support');
+    const skip = drawButton(this, panelX + 20, panelY + 82, 96, 'Skip', () => this.closePartyMenuTutorial(), false, 'default');
+    [...next, ...skip].forEach((object) => object.setDepth?.(212));
+    this.partyTutorialObjects = this.children.list.filter((object) => !existing.has(object));
+  }
+
+  clearPartyTutorialObjects() {
+    this.partyTutorialObjects.forEach((object) => {
+      if (object?.active) object.destroy();
+    });
+    this.partyTutorialObjects = [];
+    this.partyTutorialKey = '';
+  }
+
+  advancePartyMenuTutorial() {
+    this.clearPartyTutorialObjects();
+    const steps = this.getPartyMenuTutorialSteps();
+    if (this.partyTutorialStep >= steps.length - 1) {
+      this.closePartyMenuTutorial();
+      return;
+    }
+    this.partyTutorialStep += 1;
+    const step = steps[this.partyTutorialStep];
+    if (step.view !== this.viewMode) {
+      this.transitionTo(step.view, this.selectedRider);
+      return;
+    }
+    this.draw();
+  }
+
+  closePartyMenuTutorial() {
+    this.clearPartyTutorialObjects();
+    this.getState().tutorial ||= {};
+    this.getState().tutorial.partyMenusComplete = true;
+    this.draw();
   }
 
   drawPrepStats(state) {
@@ -135,15 +239,33 @@ export default class PrepScene extends BaseScene {
   }
 
   rideOut() {
-    this.getState().preparedSynergy = getPartySynergy(this.getState().party);
+    const state = this.getState();
+    if (state.capturedBounties?.length) {
+      state.lastTrailReport = {
+        money: 0,
+        supplies: 0,
+        items: [],
+        captured: [],
+        note: 'Turn in your captured bounty at the Sheriff Station before leaving town.',
+      };
+      this.saveCurrentProgress();
+      this.scene.start(scenes.HUB);
+      return;
+    }
+    state.preparedSynergy = getPartySynergy(state.party);
+    this.beginTrailLedger();
+    this.stopTownMusic();
     this.scene.start(scenes.TRAVEL);
   }
 
   drawLargePortrait(x, y, rider, horse, tone) {
     this.add.rectangle(x, y, 238, 92, palette.shadow, 0.62).setOrigin(0).setStrokeStyle(1, palette.pale, 0.34);
     this.add.line(0, 0, x + 88, y + 48, x + 150, y + 48, horse ? tone : palette.leather, horse ? 0.82 : 0.34).setLineWidth(4);
-    this.add.image(x + 70, y + 50, partySpriteKeys[rider.id] || 'sprite-marshal').setDisplaySize(76, 76);
-    if (horse) this.add.image(x + 176, y + 52, this.getHorseSpriteKey(horse)).setDisplaySize(130, 84);
+    this.animateCharacterSprite(
+      this.add.image(x + 70, y + 50, partySpriteKeys[rider.id] || 'sprite-marshal').setDisplaySize(76, 76),
+      { bob: 3, tilt: rider.id === 'quickdraw' ? 2 : -1.5, delay: rider.id === 'sawbones' ? 180 : 0 },
+    );
+    if (horse) this.fitImageToBox(this.add.image(x + 176, y + 52, this.getHorseSpriteKey(horse)), 118, 84);
     else this.add.text(x + 176, y + 36, 'On foot', labelStyle(13, '#d8c7a0')).setOrigin(0.5, 0);
     this.add.text(x + 26, y + 78, 'Rider', labelStyle(9, '#d8c7a0'));
     this.add.text(x + 152, y + 78, horse?.name || 'No horse', labelStyle(9, horse ? '#f5df9b' : '#d8c7a0'));
@@ -152,8 +274,11 @@ export default class PrepScene extends BaseScene {
   drawCorePortrait(x, rider, horse, tone) {
     this.add.rectangle(x + 18, 188, 234, 62, palette.shadow, 0.62).setOrigin(0).setStrokeStyle(1, palette.pale, 0.34);
     this.add.line(0, 0, x + 103, 220, x + 168, 220, horse ? tone : palette.leather, horse ? 0.72 : 0.32).setLineWidth(3);
-    this.add.image(x + 76, 219, partySpriteKeys[rider.id] || 'sprite-marshal').setDisplaySize(58, 58);
-    if (horse) this.add.image(x + 180, 222, this.getHorseSpriteKey(horse)).setDisplaySize(108, 72);
+    this.animateCharacterSprite(
+      this.add.image(x + 76, 219, partySpriteKeys[rider.id] || 'sprite-marshal').setDisplaySize(58, 58),
+      { bob: 2, tilt: rider.id === 'quickdraw' ? 2 : -1, delay: rider.id === 'sawbones' ? 160 : 0 },
+    );
+    if (horse) this.fitImageToBox(this.add.image(x + 180, 222, this.getHorseSpriteKey(horse)), 96, 72);
     else this.add.text(x + 180, 203, 'On foot', labelStyle(10, '#d8c7a0')).setOrigin(0.5, 0);
     this.add.text(x + 32, 242, 'Rider', labelStyle(9, '#d8c7a0'));
     this.add.text(x + 156, 242, horse?.name || 'No horse', labelStyle(9, horse ? '#f5df9b' : '#d8c7a0'));
@@ -245,7 +370,10 @@ export default class PrepScene extends BaseScene {
     this.add.text(x + width / 2, y + 6, label, labelStyle(8, '#fff8e7')).setOrigin(0.5, 0);
     bg.on('pointerover', () => bg.setFillStyle(palette.leather, 1));
     bg.on('pointerout', () => bg.setFillStyle(palette.brown, 1));
-    bg.on('pointerdown', onClick);
+    bg.on('pointerdown', () => {
+      this.playSfx('button-town');
+      onClick();
+    });
   }
 
   drawPartySynergy(party, expanded = false) {
@@ -253,7 +381,7 @@ export default class PrepScene extends BaseScene {
     if (!expanded) {
       drawPanel(this, 552, 630, 150, 76, 0.88);
       this.add.text(568, 642, identity.name, labelStyle(12, '#fff8e7'));
-      this.add.text(568, 660, identity.description, { ...textStyle(9, '#fff1bf'), wordWrap: { width: 118 }, lineSpacing: 1 });
+      this.add.text(568, 660, identity.baseEffect || identity.description, { ...textStyle(9, '#fff1bf'), wordWrap: { width: 118 }, lineSpacing: 1 });
       return;
     }
 
@@ -263,15 +391,9 @@ export default class PrepScene extends BaseScene {
   }
 
   getSynergyEffectText(identity) {
-    const effects = {
-      stampede: 'Mounted riders gain speed and damage. More Mounted tags raise the bonus.',
-      deadeye: 'Rifle and revolver attacks hit harder outside the Front lane. Rifle/Revolver tags improve it.',
-      'dust-devils': 'All riders gain speed. Throwables and attacks against Snared or Dust-Choked targets hit harder.',
-      'iron-vultures': 'Bleeding targets, Wanted riders, and Grit states add damage. Bleed/Wanted/Grit tags improve it.',
-      'frontier-survivors': 'Party takes less damage and healing is stronger. Tank and Support tags improve it.',
-      none: 'No crew-wide combat bonus is active. Change weapons, stances, horses, or traits to form one.',
-    };
-    return effects[identity.id] || identity.description;
+    const definition = partySynergyDefinitions[identity.id];
+    if (!definition) return 'No crew-wide combat bonus is active. Change weapons, stances, horses, or traits to form one.';
+    return `${definition.baseEffect} Surge: ${definition.surgeState}.`;
   }
 
   drawRideOutButton(onClick) {
@@ -284,7 +406,10 @@ export default class PrepScene extends BaseScene {
     this.add.text(x + 54, y + 36, 'Start the trail', labelStyle(9, '#4b3120'));
     bg.on('pointerover', () => bg.setFillStyle(palette.pale, 1));
     bg.on('pointerout', () => bg.setFillStyle(palette.yellow, 1));
-    bg.on('pointerdown', onClick);
+    bg.on('pointerdown', () => {
+      this.playSfx('button-town');
+      onClick();
+    });
   }
 
   clearFloatingUi() {

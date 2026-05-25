@@ -11,6 +11,7 @@ export default class TravelScene extends BaseScene {
   create() {
     super.create();
     this.message = 'The road is open. Scout carefully or push hard for outlaw rewards.';
+    this.startTitleTrailMusic();
     this.draw();
   }
 
@@ -34,11 +35,21 @@ export default class TravelScene extends BaseScene {
 
     drawButton(this, 650, 354, 230, 'Scout Carefully', () => this.travel(false));
     drawButton(this, 650, 402, 230, 'Push for Reward', () => this.travel(true));
+    const canHuntBounty = Boolean(state.bountyActive);
     drawButton(this, 650, 450, 230, 'Hunt Bounty', () => {
+      if (!state.bountyActive) {
+        this.message = 'Accept a bounty at the Sheriff Station before hunting a named target.';
+        this.draw();
+        return;
+      }
       chooseBountyEncounter(state);
+      this.stopTitleTrailMusic();
       this.scene.start(scenes.BATTLE);
-    }, true);
-    drawButton(this, 650, 544, 230, 'Return to Town', () => this.scene.start(scenes.HUB));
+    }, true, 'attack', { disabled: !canHuntBounty });
+    drawButton(this, 650, 544, 230, 'Return to Town', () => {
+      this.stopTitleTrailMusic();
+      this.scene.start(scenes.HUB);
+    });
   }
 
   drawRoute(state) {
@@ -160,6 +171,7 @@ export default class TravelScene extends BaseScene {
     const state = this.getState();
     const result = resolveTravelChoice(state, risky);
     if (result.startsBattle) {
+      this.stopTitleTrailMusic();
       this.scene.start(scenes.BATTLE);
       return;
     }

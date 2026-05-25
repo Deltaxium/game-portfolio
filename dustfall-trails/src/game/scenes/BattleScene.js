@@ -1,7 +1,8 @@
 import { enemySpriteKeys, horseSpriteKeys, partySpriteKeys } from '../assets/sprites/index.js';
+import { musicKeys, stanceVoiceKeys } from '../assets/audio/index.js';
 import { desertTileset } from '../assets/tiles/free-desert/index.js';
 import { bountyContracts, itemCatalog, palette, riderStances, scenes } from '../config/gameData.js';
-import { createElementTilemapData, createTilemapData, generateBattleMap } from '../maps/battleMaps.js';
+import { createElementTilemapData, createTilemapData, generateBattleMap, generateTutorialBattleMap } from '../maps/battleMaps.js';
 import {
   createEncounter,
   createStatus,
@@ -22,7 +23,8 @@ import {
 } from '../systems/combat.js';
 import { getLane, getReachableTiles, gridDistance, gridToWorld, isInBounds, sortUnitsForDraw, terrainAt, worldToGrid } from '../systems/grid.js';
 import { createParty } from '../systems/party.js';
-import { getPartySynergy as computePartySynergy } from '../systems/synergy.js';
+import { getAudioSettings } from '../systems/settings.js';
+import { getPartySynergy as computePartySynergy, hasPartySynergy, hasSynergySurge } from '../systems/synergy.js';
 import { drawButton, drawPanel, labelStyle, textStyle, titleStyle } from '../ui/drawing.js';
 import BaseScene from './BaseScene.js';
 
@@ -38,10 +40,15 @@ export default class BattleScene extends BaseScene {
     state.items ||= { bandage: 0, canteen: 0, whiskey: 0 };
     state.preparedSynergy ||= computePartySynergy(state.party);
     this.preparedSynergy = state.preparedSynergy;
-    this.mapDef = generateBattleMap();
-    this.coverState = this.createCoverState();
+    this.synergySurge = { id: this.preparedSynergy.id, momentum: 0, active: false };
+    this.surgeEvents = [];
     const encounterId = state.nextEncounterId || 'redSashAmbush';
+    this.mapDef = encounterId === 'tutorialDustup' ? generateTutorialBattleMap() : generateBattleMap();
     this.encounter = createEncounter(encounterId, state.wanted);
+    this.objectiveUnit = this.createWagonObjective(this.encounter, state);
+    if (this.objectiveUnit) this.prepareWagonObjectiveTile(this.objectiveUnit.grid);
+    this.encounter.enemies = this.selectEncounterEnemies(this.encounter, this.objectiveUnit);
+    this.coverState = this.createCoverState();
     state.nextEncounterId = null;
     this.enemies = this.encounter.enemies;
     this.prepPhase = true;
@@ -50,6 +57,7 @@ export default class BattleScene extends BaseScene {
     this.tutorialObjects = [];
     this.tutorialStep = 0;
     this.tutorialKey = '';
+    this.currentTutorialTip = null;
     this.dismissedTutorialKeys = new Set();
     this.battleTutorialClosed = false;
     this.activeIndex = 0;
@@ -62,6 +70,7 @@ export default class BattleScene extends BaseScene {
     this.inspectItems = [];
     this.inspectIndex = 0;
     this.log = [`${this.encounter.name}: bandits ride in from the left. The crew holds the right flank.`];
+    if (this.objectiveUnit) this.log.unshift('Protect the wagon. If it is destroyed, the crew loses the fight.');
     this.lastTick = this.time.now;
     this.heatClock = 0;
     this.statusClock = 0;
@@ -71,20 +80,48 @@ export default class BattleScene extends BaseScene {
     this.logTexts = [];
     this.endButtons = [];
     this.moveCostTexts = [];
+    if (this.isTutorialEncounter()) this.setupTutorialBattleState();
 
     this.buildStaticScene();
+    this.startBattleMusic();
     this.updateDynamicViews();
     this.drawBattleTutorial();
+  }
+
+  startBattleMusic() {
+    this.sound.stopByKey?.(musicKeys.battle);
+    this.battleMusic = this.createManagedMusic('battleMusic', musicKeys.battle, 0.16);
+    this.events.once('shutdown', () => this.stopBattleMusic());
+    this.events.once('destroy', () => this.stopBattleMusic());
+  }
+
+  stopBattleMusic() {
+    if (!this.battleMusic) {
+      this.sound.stopByKey?.(musicKeys.battle);
+      this.registry.remove('battleMusic');
+      return;
+    }
+    this.battleMusic.stop();
+    this.battleMusic.destroy();
+    this.battleMusic = null;
+    this.registry.remove('battleMusic');
   }
 
   update(time) {
     if (this.battleOver || this.paused) return;
     if (this.prepPhase) return;
+    const tutorialStep = this.isTutorialBattle() ? this.getTutorialStepKey() : '';
+    if (tutorialStep && !['intent', 'free'].includes(tutorialStep)) {
+      this.lastTick = time;
+      this.updateDynamicViews();
+      return;
+    }
     const delta = Math.min(0.08, ((time - this.lastTick) / 1000) * this.battleSpeed);
     this.lastTick = time;
     const state = this.getState();
     const reactionScale = this.activeIndex === null ? 1 : 0.32;
     const enemyDelta = delta * reactionScale;
+    this.updateSurgeMomentum(delta * reactionScale);
 
     if (this.activeIndex === null) {
       state.party.forEach((rider, index) => {
@@ -103,7 +140,9 @@ export default class BattleScene extends BaseScene {
         this.updateEnemyIntent(enemy, enemyDelta);
         return;
       }
-      enemy.atb = Math.min(100, enemy.atb + enemySpeed(enemy) * enemyDelta);
+      const enemyStatusDrag = hasSynergySurge(this.getPartySynergy(), 'ashen-trail') && enemy.statuses?.length ? 0.9 : 1;
+      const panicDrag = hasSynergySurge(this.getPartySynergy(), 'gravewind-riders') && hasStatus(enemy, 'horse-panic') ? 0.86 : 1;
+      enemy.atb = Math.min(100, enemy.atb + enemySpeed(enemy) * enemyStatusDrag * panicDrag * enemyDelta);
       if (enemy.atb >= 100) this.beginEnemyIntent(enemy);
     });
 
@@ -223,32 +262,117 @@ export default class BattleScene extends BaseScene {
 
   getCoverProtection(grid) {
     const cover = this.getCoverState(grid);
-    return cover ? Math.max(0.25, cover.hp / cover.maxHp) : 0;
+    const surgeBonus = hasSynergySurge(this.getPartySynergy(), 'frontier-survivors') || hasSynergySurge(this.getPartySynergy(), 'trail-wardens') ? 0.15 : 0;
+    return cover ? Math.min(1, Math.max(0.25, cover.hp / cover.maxHp) + surgeBonus) : 0;
   }
 
   buildUnitLayer() {
-    const units = sortUnitsForDraw([...this.enemies, ...this.getState().party]);
+    const units = sortUnitsForDraw([...this.enemies, ...this.getState().party, ...(this.objectiveUnit ? [this.objectiveUnit] : [])]);
     units.forEach((unit) => {
       const isEnemy = this.enemies.includes(unit);
+      const isObjective = unit.objective === 'wagon';
       const position = gridToWorld(this.mapDef, unit.grid);
-      const horseSprite = isEnemy ? null : this.add.image(position.x + 10, position.y + 2, this.getHorseSpriteKey(unit)).setDepth(9 + unit.grid.y);
+      const horseSprite = isEnemy || isObjective ? null : this.createBattleHorseSprite(unit, position);
       const sprite = this.add.image(position.x, position.y, this.getUnitTextureKey(unit, isEnemy)).setDepth(10 + unit.grid.y);
-      const activeGlow = isEnemy
+      const surgeAura = isEnemy || isObjective
+        ? null
+        : this.add.ellipse(position.x, position.y + 18, 92, 38, palette.yellow, 0.1).setStrokeStyle(3, palette.yellow, 0.22).setVisible(false).setDepth(6 + unit.grid.y);
+      const activeGlow = isEnemy || isObjective
         ? null
         : this.add.ellipse(position.x, position.y + 18, 62, 24, palette.yellow, 0.16).setStrokeStyle(2, palette.yellow, 0.36).setVisible(false).setDepth(7 + unit.grid.y);
-      const activeMarker = isEnemy
+      const activeMarker = isEnemy || isObjective
         ? null
         : this.add.triangle(position.x, position.y - 58, 0, 0, 22, 0, 11, 18, palette.yellow, 0.94).setStrokeStyle(2, palette.shadow, 0.9).setVisible(false).setDepth(23 + unit.grid.y);
       const readinessRing = this.add.circle(position.x, position.y, 34).setStrokeStyle(0, palette.yellow, 0).setVisible(false).setDepth(8 + unit.grid.y);
-      const label = isEnemy
+      const label = isEnemy || isObjective
         ? null
         : this.add
             .text(position.x, position.y + 34, unit.short || unit.name.split(' ')[0], labelStyle(10, '#fff8e7'))
             .setOrigin(0.5)
             .setDepth(20 + unit.grid.y);
-      const nameplate = isEnemy ? this.createEnemyNameplate(position.x, position.y, unit) : null;
-      this.unitViews.set(unit, { horseSprite, sprite, activeGlow, activeMarker, readinessRing, label, nameplate, isEnemy });
+      const nameplate = isEnemy
+        ? this.createEnemyNameplate(position.x, position.y, unit)
+        : isObjective
+          ? this.createObjectiveNameplate(position.x, position.y, unit)
+          : null;
+      this.unitViews.set(unit, {
+        horseSprite,
+        sprite,
+        surgeAura,
+        activeGlow,
+        activeMarker,
+        readinessRing,
+        label,
+        nameplate,
+        isEnemy,
+        isObjective,
+        anim: { x: 0, y: 0, scale: 1 },
+      });
     });
+  }
+
+  createWagonObjective(encounter, state) {
+    if (encounter.id === 'tutorialDustup' || encounter.bountyId || (state.supplies || 0) < 5 || Math.random() >= 0.2) return null;
+    const maxHp = 180 + Math.max(0, state.wanted || 0) * 10;
+    return {
+      id: 'wagon',
+      side: 'ally',
+      objective: 'wagon',
+      name: 'Supply Wagon',
+      short: 'Wagon',
+      description: 'Mission objective. It cannot move or act. If it falls, the crew loses.',
+      maxHp,
+      hp: maxHp,
+      atb: 0,
+      speed: 0,
+      statuses: [],
+      grid: { x: 6, y: 2 },
+    };
+  }
+
+  selectEncounterEnemies(encounter, objectiveUnit = null) {
+    if (encounter.id === 'tutorialDustup') return encounter.enemies;
+    const maxEnemies = 3;
+    const count = objectiveUnit ? maxEnemies : 1 + Math.floor(Math.random() * maxEnemies);
+    const enemies = [...encounter.enemies];
+    for (let index = enemies.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [enemies[index], enemies[swapIndex]] = [enemies[swapIndex], enemies[index]];
+    }
+    return enemies.slice(0, Math.min(count, enemies.length));
+  }
+
+  prepareWagonObjectiveTile(grid) {
+    const terrainId = this.mapDef.elements[grid.y]?.[grid.x];
+    if (!terrainId) return;
+    const destination = this.findTerrainRelocationTile(grid);
+    if (destination) this.mapDef.elements[destination.y][destination.x] = terrainId;
+    this.mapDef.elements[grid.y][grid.x] = null;
+  }
+
+  findTerrainRelocationTile(fromGrid) {
+    for (let y = this.mapDef.elements.length - 1; y >= 0; y -= 1) {
+      for (let x = this.mapDef.elements[y].length - 1; x >= 0; x -= 1) {
+        if (x === fromGrid.x && y === fromGrid.y) continue;
+        if (this.mapDef.elements[y][x]) continue;
+        if (this.getState().party.some((rider) => rider.grid.x === x && rider.grid.y === y)) continue;
+        if (this.encounter.enemies.some((enemy) => enemy.grid.x === x && enemy.grid.y === y)) continue;
+        return { x, y };
+      }
+    }
+    return null;
+  }
+
+  createBattleHorseSprite(unit, position) {
+    const horseSprite = this.add.image(position.x + 14, position.y + 4, this.getHorseSpriteKey(unit)).setDepth(9 + unit.grid.y);
+    this.fitBattleHorseSprite(horseSprite);
+    horseSprite.setVisible(isMounted(unit));
+    return horseSprite;
+  }
+
+  fitBattleHorseSprite(horseSprite) {
+    this.fitImageToBox(horseSprite, 78, 58);
+    return horseSprite;
   }
 
   drawTerrainMarkers() {
@@ -359,41 +483,60 @@ export default class BattleScene extends BaseScene {
     return { group, hpFill, atbFill, intent, intentBg, statuses };
   }
 
+  createObjectiveNameplate(x, y, unit) {
+    const depth = 24 + unit.grid.y;
+    const group = this.add.container(x, y + 42).setDepth(depth);
+    const bg = this.add.rectangle(0, 0, 108, 32, palette.shadow, 0.82).setOrigin(0.5);
+    bg.setStrokeStyle(1, palette.green, 0.44);
+    const name = this.add.text(0, -12, unit.name, this.enemyPlateTextStyle(8, '#fff8e7')).setOrigin(0.5);
+    const hpBack = this.add.rectangle(-42, 7, 84, 6, 0x1b0d08, 1).setOrigin(0);
+    const hpFill = this.add.rectangle(-42, 7, 84, 6, palette.green, 1).setOrigin(0);
+    const hpText = this.add.text(0, 14, '', this.enemyPlateTextStyle(7, '#bff0a7')).setOrigin(0.5, 0);
+    group.add([bg, name, hpBack, hpFill, hpText]);
+    return { group, hpFill, hpText };
+  }
+
   buildHud() {
     drawPanel(this, 552, 106, 370, 602);
     this.add.text(574, 126, 'Battle Desk', titleStyle(21));
 
-    this.synergyBand = this.add.rectangle(574, 156, 326, 34, palette.leather, 0.78).setOrigin(0);
+    this.synergyBand = this.add.rectangle(568, 150, 338, 58, palette.leather, 0.78).setOrigin(0);
     this.synergyBand.setStrokeStyle(2, palette.yellow, 0.42);
-    this.add.text(586, 162, 'POSSE', labelStyle(8, '#f5df9b'));
-    this.synergyText = this.add.text(638, 158, '', labelStyle(14, '#fff8e7'));
-    this.synergyDetail = this.add.text(638, 176, '', { ...textStyle(8, '#d8c7a0'), wordWrap: { width: 244 } });
+    this.add.text(580, 157, 'POSSE', labelStyle(8, '#f5df9b'));
+    this.synergyText = this.add.text(628, 154, '', { ...labelStyle(11, '#fff8e7'), fixedWidth: 266 });
+    this.synergyText.setMaxLines(1);
+    this.synergyMeterBack = this.add.rectangle(628, 174, 198, 8, palette.shadow, 0.78).setOrigin(0);
+    this.synergyMeterFill = this.add.rectangle(628, 174, 0, 8, palette.yellow, 1).setOrigin(0);
+    this.synergyMeterBack.setStrokeStyle(1, palette.pale, 0.34);
+    this.synergyMeterText = this.add.text(834, 170, '', labelStyle(8, '#f5df9b'));
+    this.synergyDetail = this.add.text(580, 188, '', { ...textStyle(8, '#d8c7a0'), fixedWidth: 308, lineSpacing: 0 });
+    this.synergyDetail.setMaxLines(2);
 
-    this.add.text(574, 204, 'Crew', labelStyle(10, '#f5df9b'));
+    this.add.text(574, 220, 'Crew', labelStyle(10, '#f5df9b'));
 
     this.getState().party.forEach((_, index) => {
-      const y = 224 + index * 64;
+      const y = 240 + index * 64;
       const rowBg = this.add.rectangle(568, y - 8, 338, 58, palette.shadow, 0.18).setOrigin(0);
       rowBg.setStrokeStyle(1, palette.pale, 0.14);
       this.partyHud[index] = {
         rowBg,
         statusBadges: [],
         name: this.add.text(578, y - 2, '', labelStyle(13, '#fff8e7')),
-        lane: this.add.text(578, y + 16, '', textStyle(8, '#d8c7a0')),
+        detail: this.add.text(578, y + 16, '', textStyle(8, '#d8c7a0')),
         mount: this.add.text(852, y - 2, '', labelStyle(9, '#241914')).setOrigin(1, 0),
-        hpText: this.add.text(578, y + 34, '', labelStyle(9, '#bff0a7')),
-        atbText: this.add.text(744, y + 34, '', labelStyle(9, '#f5df9b')),
-        hpFill: this.createMeter(620, y + 36, 104, palette.green, 11),
-        atbFill: this.createMeter(790, y + 36, 76, palette.yellow, 11),
+        hpText: this.add.text(578, y + 34, '', labelStyle(8, '#bff0a7')),
+        atbText: this.add.text(728, y + 34, '', labelStyle(8, '#f5df9b')),
+        hpFill: this.createMeter(654, y + 36, 64, palette.green, 10),
+        atbFill: this.createMeter(806, y + 36, 70, palette.yellow, 10),
       };
     });
 
-    this.add.text(574, 416, 'Field Intel', labelStyle(10, '#f5df9b'));
-    this.inspectTitle = this.add.text(588, 434, 'Inspector', labelStyle(14, '#fff8e7'));
+    this.add.text(574, 428, 'Field Intel', labelStyle(10, '#f5df9b'));
+    this.inspectTitle = this.add.text(588, 446, 'Inspector', labelStyle(14, '#fff8e7'));
     this.fieldIntelTexts = [];
     for (let index = 0; index < 6; index += 1) {
       this.fieldIntelTexts.push(
-        this.add.text(588, 456 + index * 13, '', {
+        this.add.text(588, 468 + index * 12, '', {
           ...textStyle(9, '#e2d9bd'),
           wordWrap: { width: 292 },
         }),
@@ -448,7 +591,12 @@ export default class BattleScene extends BaseScene {
       { label: 'Skill', action: () => this.setCommandMode('skills'), primary: false, tone: 'support' },
       { label: 'Move', action: () => this.startMoveMode(), primary: false, tone: 'move' },
       { label: 'Item', action: () => this.setCommandMode('items'), primary: false, tone: 'support' },
-      { label: 'Horse', action: () => this.setCommandMode('horse'), primary: false, tone: 'move' },
+      {
+        label: ready && !isMounted(ready) ? 'Mount' : 'Horse',
+        action: () => (ready && !isMounted(ready) ? this.toggleMount() : this.setCommandMode('horse')),
+        primary: false,
+        tone: 'move',
+      },
       { label: 'Stance', action: () => this.setCommandMode('stances'), primary: false, tone: 'stance' },
     ];
     let slots = this.commandButtonSlots;
@@ -513,18 +661,22 @@ export default class BattleScene extends BaseScene {
           primary: false,
           tone: 'move',
         },
-        ...this.getHorseActions(ready).map((horseAction) => ({
-          label: horseAction.name,
-          action: () => this.startTargetMode({ type: 'horse-action', horseAction }),
-          primary: false,
-          tone: horseAction.tone || 'attack',
-        })),
-        {
-          label: 'Combo',
-          action: () => this.startTargetMode({ type: 'combo' }),
-          primary: false,
-          tone: 'attack',
-        },
+        ...(isMounted(ready)
+          ? [
+              ...this.getHorseActions(ready).map((horseAction) => ({
+                label: horseAction.name,
+                action: () => this.startTargetMode({ type: 'horse-action', horseAction }),
+                primary: false,
+                tone: horseAction.tone || 'attack',
+              })),
+              {
+                label: 'Combo',
+                action: () => this.startTargetMode({ type: 'combo' }),
+                primary: false,
+                tone: 'attack',
+              },
+            ]
+          : []),
         {
           label: 'Back',
           action: () => this.setCommandMode('root'),
@@ -535,14 +687,38 @@ export default class BattleScene extends BaseScene {
       slots = this.commandButtonSlots;
     }
 
+    if (this.shouldFilterTutorialCommandButtons()) {
+      entries = this.withTutorialDisabledCommands(entries);
+    }
+
     entries.forEach((entry, index) => {
       const slot = slots[index];
       if (!slot) return;
-      this.commandButtons.push(...drawButton(this, slot.x, slot.y, slot.width, entry.label, entry.action, entry.primary, entry.tone));
+      const buttonObjects = drawButton(this, slot.x, slot.y, slot.width, entry.label, entry.action, entry.primary, entry.tone, { disabled: entry.disabled });
+      buttonObjects.forEach((object) => object.setDepth?.(120));
+      this.commandButtons.push(...buttonObjects);
+    });
+  }
+
+  withTutorialDisabledCommands(entries) {
+    return entries.map((entry) => {
+      const kind = entry.label === 'Begin' ? 'begin' : 'command';
+      const allowed = this.isTutorialActionAllowed(kind, { label: entry.label });
+      if (allowed) return entry;
+      return {
+        ...entry,
+        primary: false,
+        disabled: true,
+        action: () => this.blockTutorialAction('Use the highlighted tutorial command.'),
+      };
     });
   }
 
   beginBattle() {
+    if (!this.isTutorialActionAllowed('begin')) {
+      this.blockTutorialAction();
+      return;
+    }
     this.prepPhase = false;
     this.activeIndex = null;
     this.commandMode = 'root';
@@ -551,6 +727,7 @@ export default class BattleScene extends BaseScene {
       rider.atb = Math.min(rider.atb || 0, 60);
     });
     this.addLog('Preparation complete. ATB begins.');
+    if (this.isTutorialBattle()) this.completeTutorialStep('prep');
     this.buildCommandButtons();
     this.updateDynamicViews();
   }
@@ -569,10 +746,11 @@ export default class BattleScene extends BaseScene {
     drawPanel(this, 38, 520, 480, 172, 0.82);
     this.add.text(54, 532, 'Battle Log', labelStyle(10, '#f5df9b'));
     for (let index = 0; index < 6; index += 1) {
-      this.logTexts.push(this.add.text(54, 552 + index * 20, '', {
+      this.logTexts.push(this.add.text(54, 552 + index * 22, '', {
         ...textStyle(9, '#e2d9bd'),
-        wordWrap: { width: 440 },
+        fixedWidth: 444,
       }));
+      this.logTexts[index].setMaxLines(1);
     }
   }
 
@@ -585,6 +763,7 @@ export default class BattleScene extends BaseScene {
     this.updateStatsText();
     this.drawPriorityOverlay();
     this.drawEnemyDangerOverlay();
+    this.drawTargetOverlay();
     this.updateUnitViews();
     this.updateHud();
     this.drawBattleTutorial();
@@ -594,47 +773,430 @@ export default class BattleScene extends BaseScene {
     return this.encounter.id === 'tutorialDustup' && !this.battleTutorialClosed;
   }
 
-  getBattleTutorialTip() {
-    if (this.prepPhase) {
-      return {
-        key: 'prep',
-        title: 'Preparation',
-        body: 'Battle is paused. Use Items or Stance, cycle riders, then press Begin when ready.',
-        point: { x: 625, y: 598 },
-      };
+  isTutorialEncounter() {
+    return this.encounter.id === 'tutorialDustup';
+  }
+
+  setupTutorialBattleState() {
+    const party = this.getState().party;
+    const starts = [
+      { x: 7, y: 2 },
+      { x: 7, y: 3 },
+      { x: 7, y: 4 },
+    ];
+    party.forEach((rider, index) => {
+      rider.grid = { ...starts[index] };
+      rider.hp = Math.max(rider.hp, Math.ceil(rider.maxHp * 0.72));
+      rider.statuses = [];
+      rider.atb = 0;
+      rider.mounted = Boolean(rider.horseId);
+    });
+    this.tutorialScript = {
+      inspectGrid: { x: 6, y: 1 },
+      startGrids: [
+        { x: 7, y: 2 },
+        { x: 7, y: 3 },
+        { x: 7, y: 4 },
+      ],
+      moveGrid: { x: 5, y: 4 },
+      docGrid: { x: 7, y: 4 },
+      raiderGrid: { x: 3, y: 2 },
+      riflemanGrid: { x: 2, y: 3 },
+      coverGrid: { x: 6, y: 1 },
+      raiderId: 'raider',
+      riflemanId: 'rifleman',
+    };
+    this.getState().items.bandage = Math.max(this.getState().items.bandage || 0, 1);
+  }
+
+  getTutorialStepKey() {
+    const step = this.getScriptedBattleTutorialTip();
+    return step?.key || '';
+  }
+
+  isTutorialActionAllowed(kind, detail = {}) {
+    if (!this.isTutorialBattle()) return true;
+    const step = this.getTutorialStepKey();
+    if (['field-intel-lane', 'field-intel-elevation', 'field-intel-cost', 'field-intel-cover'].includes(step)) return false;
+    if (step === 'field-intel') return kind === 'inspect';
+    if (step === 'prep') return kind === 'begin';
+    if (['synergy', 'atb'].includes(step)) return false;
+    if (step === 'stance') return kind === 'command' && ['Stance', 'Sharpshooter'].includes(detail.label);
+    if (step === 'move') return (kind === 'command' && detail.label === 'Move') || kind === 'move-tile';
+    if (step === 'dismount') return kind === 'command' && ['Horse', 'Dismount'].includes(detail.label);
+    if (step === 'mount') return kind === 'command' && detail.label === 'Mount';
+    if (step === 'surge') return (kind === 'command' && ['Horse', 'Charge'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    if (step === 'cover') return (kind === 'command' && detail.label === 'Attack') || (kind === 'target-cover' && detail.grid?.x === this.tutorialScript.coverGrid.x && detail.grid?.y === this.tutorialScript.coverGrid.y);
+    if (step === 'attack') return (kind === 'command' && detail.label === 'Attack') || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    if (step === 'skill-status') return (kind === 'command' && ['Skill', 'Iron Shot'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    if (step === 'mark') return (kind === 'command' && ['Skill', 'Marshal Mark'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.riflemanId);
+    if (step === 'item') return kind === 'command' && (detail.label === 'Item' || detail.label.startsWith('Bandage'));
+    if (step === 'intent') return kind === 'wait';
+    if (step === 'charge') return (kind === 'command' && ['Horse', 'Charge'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    if (step === 'combo') return (kind === 'command' && ['Horse', 'Combo'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    return true;
+  }
+
+  shouldFilterTutorialCommandButtons() {
+    if (!this.isTutorialBattle()) return false;
+    const step = this.getTutorialStepKey();
+    return ['field-intel-lane', 'field-intel-elevation', 'field-intel-cost', 'field-intel-cover', 'field-intel', 'prep', 'stance', 'move', 'dismount', 'mount', 'surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'charge', 'combo'].includes(step);
+  }
+
+  blockTutorialAction(message = 'Follow the tutorial prompt first.') {
+    this.addLog(message);
+    this.updateDynamicViews();
+  }
+
+  advanceTutorialTo(key) {
+    if (!this.isTutorialBattle()) return;
+    const steps = this.getTutorialStepSequence();
+    const index = steps.findIndex((step) => step.key === key);
+    if (index >= 0 && index >= this.tutorialStep) {
+      this.tutorialStep = index;
+      this.currentTutorialTip = null;
+      this.tutorialKey = '';
+      this.tutorialObjects.forEach((object) => object.destroy());
+      this.tutorialObjects = [];
+      this.prepareTutorialStep();
+      this.updateDynamicViews();
     }
-    const intentEnemy = this.enemies.find((enemy) => enemy.hp > 0 && enemy.intent);
-    if (intentEnemy) {
-      const point = gridToWorld(this.mapDef, intentEnemy.grid);
-      return {
+  }
+
+  completeTutorialStep(key) {
+    if (!this.isTutorialBattle()) return;
+    const steps = this.getTutorialStepSequence();
+    const index = steps.findIndex((step) => step.key === key);
+    if (index < 0 || index !== this.tutorialStep) return;
+    this.tutorialStep += 1;
+    this.currentTutorialTip = null;
+    this.tutorialKey = '';
+    this.tutorialObjects.forEach((object) => object.destroy());
+    this.tutorialObjects = [];
+    this.prepareTutorialStep();
+    this.updateDynamicViews();
+  }
+
+  prepareTutorialStep() {
+    if (!this.isTutorialBattle()) return;
+    const party = this.getState().party;
+    const step = this.getScriptedBattleTutorialTip();
+    if (!step) return;
+    if (step.key === 'free') {
+      this.releaseTutorialBattle();
+      return;
+    }
+    this.stabilizeTutorialStep(step.key);
+    this.clearMoveMode();
+    this.clearTargetOverlay();
+    this.commandMode = 'root';
+    if (step.key === 'stance') {
+      this.activeIndex = 2;
+      party[2].atb = 100;
+    }
+    if (step.key === 'move') {
+      this.activeIndex = 1;
+      party[1].atb = 100;
+    }
+    if (step.key === 'dismount') {
+      this.activeIndex = 1;
+      party[1].mounted = true;
+      party[1].atb = 100;
+    }
+    if (step.key === 'mount') {
+      this.activeIndex = 1;
+      party[1].mounted = false;
+      party[1].atb = 100;
+    }
+    if (step.key === 'surge') {
+      this.activeIndex = 1;
+      party[1].atb = 100;
+      party[1].horseStance = 'Stampede';
+      party[1].mounted = true;
+      this.recordSurgeEvent('stance', party[1], null, { exposed: !terrainAt(this.mapDef, party[1].grid).cover });
+    }
+    if (step.key === 'cover') {
+      this.activeIndex = 2;
+      party[2].atb = 100;
+    }
+    if (step.key === 'attack') {
+      this.activeIndex = 2;
+      party[2].atb = 100;
+    }
+    if (step.key === 'skill-status') {
+      this.activeIndex = 0;
+      party[0].atb = 100;
+    }
+    if (step.key === 'mark') {
+      this.activeIndex = 0;
+      party[0].atb = 100;
+    }
+    if (step.key === 'item') {
+      this.activeIndex = 0;
+      party[0].hp = Math.min(party[0].hp, party[0].maxHp - 28);
+      party[0].atb = 100;
+    }
+    if (step.key === 'intent') {
+      this.activeIndex = null;
+      const rifleman = this.enemies.find((enemy) => enemy.id === this.tutorialScript.riflemanId && enemy.hp > 0);
+      if (rifleman && !rifleman.intent) this.beginEnemyIntent(rifleman);
+    }
+    if (step.key === 'charge') {
+      this.activeIndex = 1;
+      party[1].atb = 100;
+    }
+    if (step.key === 'combo') {
+      this.activeIndex = 1;
+      party[1].atb = 100;
+      this.getState().showdown = Math.max(this.getState().showdown, 70);
+    }
+    this.buildCommandButtons();
+  }
+
+  stabilizeTutorialStep(stepKey) {
+    const party = this.getState().party;
+    const raider = this.enemies.find((enemy) => enemy.id === this.tutorialScript?.raiderId);
+    const rifleman = this.enemies.find((enemy) => enemy.id === this.tutorialScript?.riflemanId);
+    this.stabilizeTutorialPositions(stepKey, party, raider, rifleman);
+    const needsRaider = ['surge', 'cover', 'attack', 'skill-status', 'item', 'intent', 'charge', 'combo'].includes(stepKey);
+    if (needsRaider && raider && raider.hp <= 0) {
+      raider.hp = Math.max(raider.hp, 42);
+      raider.intent = null;
+    }
+    if (stepKey === 'mark' && rifleman && rifleman.hp <= 0) {
+      rifleman.hp = Math.max(rifleman.hp, 36);
+      rifleman.intent = null;
+    }
+    if (['surge', 'charge', 'combo'].includes(stepKey)) {
+      const rider = party[1];
+      if (rider) {
+        rider.mounted = Boolean(rider.horseId);
+        this.clearStatus(rider, 'horse-panic');
+      }
+    }
+    if (stepKey === 'cover') {
+      const cover = this.coverState.get(this.gridKey(this.tutorialScript.coverGrid));
+      if (cover) {
+        cover.hp = Math.min(cover.maxHp, 4);
+        this.mapDef.elements[this.tutorialScript.coverGrid.y][this.tutorialScript.coverGrid.x] = cover.type;
+        this.refreshCoverVisuals();
+      }
+    }
+  }
+
+  stabilizeTutorialPositions(stepKey, party, raider, rifleman) {
+    const { startGrids, moveGrid, docGrid, raiderGrid, riflemanGrid } = this.tutorialScript || {};
+    if (!startGrids || !moveGrid || !docGrid || !raiderGrid || !riflemanGrid) return;
+    const place = (unit, grid) => {
+      if (unit && grid) unit.grid = { ...grid };
+    };
+
+    if (['field-intel-lane', 'field-intel-elevation', 'field-intel-cost', 'field-intel-cover', 'field-intel', 'stance', 'move'].includes(stepKey)) {
+      party.forEach((rider, index) => place(rider, startGrids[index]));
+      place(raider, raiderGrid);
+      place(rifleman, riflemanGrid);
+      return;
+    }
+
+    if (['surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'intent', 'charge', 'combo'].includes(stepKey)) {
+      place(party[0], startGrids[0]);
+      place(party[1], moveGrid);
+      place(party[2], docGrid);
+      place(raider, raiderGrid);
+      place(rifleman, riflemanGrid);
+    }
+  }
+
+  getBattleTutorialTip() {
+    if (this.currentTutorialTip && !this.dismissedTutorialKeys.has(this.currentTutorialTip.key)) return this.currentTutorialTip;
+    return this.getScriptedBattleTutorialTip();
+  }
+
+  getScriptedBattleTutorialTip() {
+    const steps = this.getTutorialStepSequence();
+    const step = steps[this.tutorialStep];
+    if (!step || !step.ready()) return null;
+    return step;
+  }
+
+  getTutorialStepSequence() {
+    const party = this.getState().party;
+    const raider = this.enemies.find((enemy) => enemy.id === this.tutorialScript?.raiderId) || living(this.enemies)[0];
+    const rifleman = this.enemies.find((enemy) => enemy.id === this.tutorialScript?.riflemanId) || living(this.enemies)[1] || raider;
+    const intelPoint = gridToWorld(this.mapDef, this.tutorialScript?.inspectGrid || { x: 6, y: 1 });
+    const elevationPoint = gridToWorld(this.mapDef, { x: 6, y: 0 });
+    const movePoint = gridToWorld(this.mapDef, this.tutorialScript?.moveGrid || { x: 5, y: 3 });
+    const coverPoint = gridToWorld(this.mapDef, this.tutorialScript?.coverGrid || { x: 4, y: 2 });
+    const raiderPoint = raider ? gridToWorld(this.mapDef, raider.grid) : { x: 220, y: 320 };
+    const riflePoint = rifleman ? gridToWorld(this.mapDef, rifleman.grid) : { x: 160, y: 190 };
+    return [
+      {
+        key: 'field-intel-lane',
+        title: 'Field Intel',
+        body: 'Before the fight starts, Field Intel lets you inspect a tile. The Lane line tells you where that tile sits for crew positioning and enemy pressure.',
+        point: { x: 574, y: 428 },
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'field-intel-elevation',
+        title: 'Elevation',
+        body: 'Elevation changes lines and angles. Higher tiles can improve shots and block sight; lower tiles change the angle in the opposite direction.',
+        point: elevationPoint,
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'field-intel',
+        title: 'Inspect A Tile',
+        body: 'Select the highlighted cover tile now. Field Intel will show its cover, elevation, lane, hazards, and Move Cost.',
+        point: intelPoint,
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'field-intel-cost',
+        title: 'Move Cost',
+        body: 'Move Cost shows how expensive the inspected tile is to enter. Rough ground, mud, cover, and mounted penalties can spend more ATB.',
+        point: intelPoint,
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'field-intel-cover',
+        title: 'Cover Intel',
+        body: 'Cover Intel shows the object protecting that tile, its remaining durability, and how much protection it gives until it is destroyed.',
+        point: intelPoint,
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'prep',
+        title: 'Begin Battle',
+        body: 'Field Intel is set. Press Begin to start ATB and move from preparation into the fight.',
+        point: { x: 625, y: 598 },
+        ready: () => this.prepPhase,
+      },
+      {
+        key: 'synergy',
+        title: 'Posse Synergy',
+        body: 'The Posse band shows the active crew identity. Its base effect stays on, even when riders briefly change stances.',
+        point: { x: 740, y: 174 },
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'atb',
+        title: 'ATB Flow',
+        body: 'ATB fills in real time. A rider acts at 100%, then spending a command lowers their ATB.',
+        point: { x: 836, y: 260 },
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'stance',
+        title: 'Stances',
+        body: `${party[2]?.short || 'Doc'} is ready. Open Stance and choose Sharpshooter. Stances change speed, range, defense, and weapon roles.`,
+        point: { x: 735, y: 608 },
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'move',
+        title: 'Reposition',
+        body: `${party[1]?.short || 'June'} is ready. Press Move, then take the highlighted ridge tile. Move Cost is the ATB spent to enter a tile; rough terrain and mounted penalties cost more.`,
+        point: movePoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'dismount',
+        title: 'Dismounting',
+        body: `${party[1]?.short || 'June'} is mounted. Open Horse and choose Dismount. Dismounted riders fight on foot, use cover better, and lose mounted horse actions.`,
+        point: { x: 735, y: 608 },
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'mount',
+        title: 'Mounting Up',
+        body: 'The Horse button becomes Mount while a rider is on foot. Press Mount to get back in the saddle and restore mounted movement and horse actions.',
+        point: { x: 810, y: 608 },
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'surge',
+        title: 'Synergy Surge',
+        body: 'Surges need aligned play and then fade by momentum. Open Horse, choose Charge, then hit the Practice Raider on the center road.',
+        point: raiderPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'cover',
+        title: 'Cover',
+        body: `${party[2]?.short || 'Doc'} is ready. Press Attack, then shoot the highlighted cover. Destroyed cover leaves a clear tile and disappears from Field Intel.`,
+        point: coverPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'attack',
+        title: 'Target Preview',
+        body: `${party[2]?.short || 'Doc'} is ready. Press Attack, then shoot the Practice Raider on the center road. The preview shows damage, hit, crit, status, cover, and range.`,
+        point: raiderPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'skill-status',
+        title: 'Skills And Status',
+        body: `${party[0]?.short || 'Vale'} is ready. Open Skill, choose Iron Shot, then hit the Practice Raider on the center road to apply Bleeding Out.`,
+        point: raiderPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'mark',
+        title: 'Marked Targets',
+        body: 'Open Skill, choose Marshal Mark, then mark the Practice Rifleman on the lower open tile. Marked targets take stronger focused pressure.',
+        point: riflePoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'item',
+        title: 'Items And Healing',
+        body: `${party[0]?.short || 'Vale'} is wounded. Open Item and use a Bandage to recover HP and learn item turn cost.`,
+        point: { x: 735, y: 608 },
+        ready: () => !this.prepPhase,
+      },
+      {
         key: 'intent',
         title: 'Enemy Intent',
-        body: 'Enemies do not fire instantly. Red intent shows who is about to act and who is threatened.',
-        point: { x: point.x, y: point.y - 48 },
-      };
-    }
-    if (this.targetMode) {
-      return {
-        key: 'targeting',
-        title: 'Target Preview',
-        body: 'Choose a highlighted target. The preview shows damage, hit, crit, status, cover, and range.',
-        point: { x: 322, y: 284 },
-      };
-    }
-    if (this.activeIndex !== null) {
-      return {
-        key: 'ready',
-        title: 'Ready Rider',
-        body: 'A rider is ready. Pick an action from the Battle Desk while time is slowed.',
+        body: 'The rifleman is preparing a shot. Red intent shows the target and threat area before the enemy acts.',
+        point: riflePoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'charge',
+        title: 'Horse Pressure',
+        body: `${party[1]?.short || 'June'} is ready again. Open Horse, choose Charge, then hit the Practice Raider on the center road to demonstrate mounted Panic and pushback.`,
+        point: raiderPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'combo',
+        title: 'Showdown Combo',
+        body: 'Showdown is charged. Open Horse, choose Combo, then strike the Practice Raider. Combos spend Showdown for a mounted burst.',
+        point: raiderPoint,
+        ready: () => !this.prepPhase,
+      },
+      {
+        key: 'free',
+        title: 'Finish The Dustup',
+        body: 'The scripted gates are open. Finish the tutorial fight using ATB, stances, movement, cover, mount/dismount, skills, status, items, intent, horse actions, and combos.',
         point: { x: 735, y: 608 },
-      };
-    }
-    return {
-      key: 'atb',
-      title: 'ATB Flow',
-      body: 'Bars fill in real time. Allies wait for commands; enemies prepare visible intent.',
-      point: { x: 835, y: 260 },
-    };
+        ready: () => !this.prepPhase,
+      },
+    ];
+  }
+
+  findTutorialCoverPoint() {
+    let coverGrid = null;
+    this.coverState.forEach((cover, key) => {
+      if (coverGrid || cover.hp <= 0) return;
+      const [x, y] = key.split(',').map(Number);
+      coverGrid = { x, y };
+    });
+    if (!coverGrid) return { x: 322, y: 284 };
+    const point = gridToWorld(this.mapDef, coverGrid);
+    return { x: point.x, y: point.y - 18 };
   }
 
   drawBattleTutorial() {
@@ -648,41 +1210,145 @@ export default class BattleScene extends BaseScene {
       }
       return;
     }
+    this.currentTutorialTip = tip;
     if (this.tutorialKey === tip.key) return;
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.tutorialKey = tip.key;
     const existing = new Set(this.children.list);
-    const panelX = 42;
-    const panelY = 106;
     const panelW = 340;
     const panelH = 154;
+    const { x: panelX, y: panelY } = this.getTutorialPanelPosition(tip, panelW, panelH);
     drawPanel(this, panelX, panelY, panelW, panelH, 0.94).setDepth(210);
     this.add.text(panelX + 20, panelY + 18, tip.title, titleStyle(18)).setDepth(211);
     this.add.text(panelX + 20, panelY + 50, tip.body, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 292 }, lineSpacing: 2 }).setDepth(211);
     const arrow = this.add.graphics().setDepth(211);
-    arrow.lineStyle(3, palette.yellow, 0.86);
-    arrow.lineBetween(panelX + panelW - 28, panelY + panelH / 2, tip.point.x, tip.point.y);
-    arrow.fillStyle(palette.yellow, 0.9);
-    arrow.fillTriangle(tip.point.x, tip.point.y, tip.point.x - 8, tip.point.y - 5, tip.point.x - 5, tip.point.y + 8);
-    const next = drawButton(this, panelX + 202, panelY + 102, 112, 'Got It', () => this.dismissBattleTutorialTip(), true, 'support');
-    const skip = drawButton(this, panelX + 30, panelY + 102, 96, 'Skip', () => this.closeBattleTutorial(), false, 'default');
+    this.drawTutorialArrow(arrow, panelX + panelW - 28, panelY + panelH / 2, tip.point.x, tip.point.y);
+    const actionStep = ['field-intel', 'stance', 'move', 'dismount', 'mount', 'surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'intent', 'charge', 'combo'].includes(tip.key);
+    const next = actionStep
+      ? drawButton(this, panelX + 202, panelY + 102, 112, 'Do This', () => this.blockTutorialAction('Use the highlighted tutorial command.'), true, 'support')
+      : drawButton(this, panelX + 202, panelY + 102, 112, 'Got It', () => this.dismissBattleTutorialTip(), true, 'support');
+    const skip = actionStep
+      ? []
+      : drawButton(this, panelX + 30, panelY + 102, 96, 'Skip', () => this.closeBattleTutorial(), false, 'default');
     [...next, ...skip].forEach((object) => object.setDepth?.(212));
     this.tutorialObjects = this.children.list.filter((object) => !existing.has(object));
   }
 
+  drawTutorialArrow(arrow, startX, startY, endX, endY) {
+    const angle = Math.atan2(endY - startY, endX - startX);
+    const headLength = 14;
+    const headWidth = 9;
+    const lineEndX = endX - Math.cos(angle) * headLength;
+    const lineEndY = endY - Math.sin(angle) * headLength;
+    const leftX = endX - Math.cos(angle) * headLength + Math.cos(angle + Math.PI / 2) * headWidth;
+    const leftY = endY - Math.sin(angle) * headLength + Math.sin(angle + Math.PI / 2) * headWidth;
+    const rightX = endX - Math.cos(angle) * headLength + Math.cos(angle - Math.PI / 2) * headWidth;
+    const rightY = endY - Math.sin(angle) * headLength + Math.sin(angle - Math.PI / 2) * headWidth;
+    arrow.lineStyle(3, palette.yellow, 0.86);
+    arrow.lineBetween(startX, startY, lineEndX, lineEndY);
+    arrow.fillStyle(palette.yellow, 0.9);
+    arrow.fillTriangle(endX, endY, leftX, leftY, rightX, rightY);
+  }
+
+  getTutorialPanelPosition(tip, panelW, panelH) {
+    const defaultPosition = { x: 42, y: 106 };
+    const point = tip?.point || { x: 0, y: 0 };
+    const padding = 28;
+    const overlapsPoint = (
+      point.x >= defaultPosition.x - padding
+      && point.x <= defaultPosition.x + panelW + padding
+      && point.y >= defaultPosition.y - padding
+      && point.y <= defaultPosition.y + panelH + padding
+    );
+    if (['mark', 'intent'].includes(tip?.key) || overlapsPoint) return { x: 500, y: 92 };
+    return defaultPosition;
+  }
+
   dismissBattleTutorialTip() {
-    if (this.tutorialKey) this.dismissedTutorialKeys.add(this.tutorialKey);
+    const dismissedKey = this.tutorialKey;
+    if (['field-intel', 'stance', 'move', 'dismount', 'mount', 'surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'intent', 'charge', 'combo'].includes(dismissedKey)) {
+      this.blockTutorialAction('Complete the tutorial action to continue.');
+      return;
+    }
+    if (dismissedKey) this.dismissedTutorialKeys.add(dismissedKey);
+    this.currentTutorialTip = null;
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.tutorialKey = '';
+    this.advanceBattleTutorialScript(dismissedKey);
   }
 
   closeBattleTutorial() {
     this.battleTutorialClosed = true;
+    const state = this.getState();
+    state.tutorial ||= {};
+    state.tutorial.skipped = true;
+    state.tutorial.townComplete = true;
+    state.tutorial.partyMenusComplete = true;
+    state.tutorial.active = false;
+    this.tutorialKey = '';
+    this.currentTutorialTip = null;
+    this.tutorialObjects.forEach((object) => object.destroy());
+    this.tutorialObjects = [];
+  }
+
+  releaseTutorialBattle() {
+    this.battleTutorialClosed = true;
+    this.currentTutorialTip = null;
     this.tutorialKey = '';
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
+    this.clearMoveMode();
+    this.clearTargetOverlay();
+    this.commandMode = 'root';
+    if (this.activeIndex === null) {
+      const readyIndex = this.getState().party.findIndex((rider) => rider.hp > 0 && rider.atb >= 100);
+      this.activeIndex = readyIndex >= 0 ? readyIndex : null;
+    }
+    this.addLog('Tutorial gates are open. Finish the dustup freely.');
+    this.buildCommandButtons();
+  }
+
+  advanceBattleTutorialScript(dismissedKey) {
+    if (!dismissedKey) return;
+    this.tutorialStep += 1;
+    this.prepareTutorialStep();
+    this.updateDynamicViews();
+  }
+
+  forceTutorialReadyRider() {
+    if (this.prepPhase || this.activeIndex !== null) return;
+    const index = this.getState().party.findIndex((rider) => rider.hp > 0);
+    if (index < 0) return;
+    this.getState().party[index].atb = 100;
+    this.activeIndex = index;
+    this.buildCommandButtons();
+  }
+
+  forceTutorialTargeting() {
+    if (this.prepPhase || this.targetMode) return;
+    this.forceTutorialReadyRider();
+    if (this.activeIndex === null) return;
+    this.startTargetMode({ type: 'attack' });
+  }
+
+  forceTutorialStatus() {
+    const target = living(this.enemies)[0];
+    if (!target) return;
+    this.applySkillStatus(target, 'snared');
+    this.showDamagePopup(target, 'Snare');
+    this.addLog(`${target.name} is Snared for the tutorial.`);
+  }
+
+  forceTutorialEnemyIntent() {
+    this.targetMode = null;
+    this.clearTargetOverlay();
+    this.activeIndex = null;
+    const enemy = living(this.enemies).find((candidate) => !candidate.intent) || living(this.enemies)[0];
+    if (!enemy) return;
+    enemy.atb = 100;
+    this.beginEnemyIntent(enemy);
   }
 
   updateStatsText() {
@@ -693,7 +1359,223 @@ export default class BattleScene extends BaseScene {
   }
 
   getPartySynergy() {
-    return this.preparedSynergy;
+    const surge = this.getActiveSynergySurge();
+    const surgeMomentum = this.getSynergySurgeMomentum();
+    return {
+      ...this.preparedSynergy,
+      surge,
+      surgeMomentum,
+    };
+  }
+
+  getSynergySurgeMomentum() {
+    if (!this.synergySurge || this.synergySurge.id !== this.preparedSynergy?.id) return 0;
+    return Math.max(0, Math.min(100, this.synergySurge.momentum || 0));
+  }
+
+  getActiveSynergySurge() {
+    if (!this.synergySurge || this.synergySurge.id !== this.preparedSynergy?.id) return null;
+    const momentum = this.getSynergySurgeMomentum();
+    if (momentum < 60) return null;
+    return {
+      ...this.synergySurge,
+      active: true,
+      momentum,
+      remaining: momentum,
+    };
+  }
+
+  recordSurgeEvent(type, rider = null, target = null, extra = {}) {
+    if (this.prepPhase || this.battleOver || !this.preparedSynergy || this.preparedSynergy.id === 'none') return;
+    const now = this.time.now;
+    this.surgeEvents.push({
+      type,
+      time: now,
+      riderId: rider?.id || null,
+      targetId: target?.id || null,
+      riderStance: rider?.riderStance || '',
+      horseStance: rider?.horseStance || '',
+      weapon: rider ? getWeapon(rider).id : '',
+      mounted: rider ? isMounted(rider) : false,
+      targetLane: target ? getLane(target) : '',
+      targetHpRatio: target?.maxHp ? target.hp / target.maxHp : 1,
+      targetStatuses: target?.statuses?.map((status) => status.name) || [],
+      riderStatuses: rider?.statuses?.map((status) => status.name) || [],
+      ...extra,
+    });
+    this.surgeEvents = this.surgeEvents.filter((event) => now - event.time <= 9000);
+    this.evaluateSynergySurge();
+  }
+
+  evaluateSynergySurge() {
+    const synergy = this.preparedSynergy;
+    if (!synergy || synergy.id === 'none') return;
+    const events = this.surgeEvents.filter((event) => this.time.now - event.time <= 8000);
+    const unique = (items) => new Set(items.filter(Boolean)).size;
+    const aggressive = (event) => ['Gunslinger', 'Outlaw', 'Wrangler'].includes(event.riderStance) || ['Stampede', 'Sprint', 'Wild Frenzy'].includes(event.horseStance);
+    const defensive = (event) => ['Iron Rider', 'Wrangler'].includes(event.riderStance) || ['Defensive Guard', 'Calm Focus'].includes(event.horseStance);
+    const vulnerable = (event) => event.targetHpRatio <= 0.5 || event.targetStatuses.some((status) => ['marked', 'showdown', 'bleeding-out'].includes(status));
+    let triggered = false;
+
+    if (synergy.id === 'stampede') {
+      triggered = unique(events.filter((event) => event.mounted && aggressive(event) && ['stance', 'attack'].includes(event.type)).map((event) => event.riderId)) >= 2
+        && events.some((event) => event.type === 'move' && event.advanced);
+    }
+    if (synergy.id === 'deadeye') {
+      const precision = events.filter((event) => ['stance', 'attack'].includes(event.type) && (event.riderStance === 'Sharpshooter' || ['rifle', 'revolver'].includes(event.weapon)));
+      triggered = this.hasFocusedTarget(precision, 2);
+    }
+    if (synergy.id === 'frontier-survivors') {
+      triggered = unique(events.filter((event) => defensive(event) || ['guard', 'heal'].includes(event.type)).map((event) => event.riderId)) >= 2
+        || this.hasGroupedPressure(events);
+    }
+    if (synergy.id === 'dust-devils') {
+      triggered = (events.filter((event) => event.type === 'move').length >= 2 && unique(events.filter((event) => event.type === 'move').map((event) => event.riderId)) >= 2)
+        || unique(events.filter((event) => event.type === 'attack' && event.flanking).map((event) => event.riderId)) >= 2;
+    }
+    if (synergy.id === 'iron-vultures') triggered = unique(events.filter((event) => event.type === 'status' && event.statusName === 'bleeding-out').map((event) => event.targetId)) >= 2;
+    if (synergy.id === 'outlaw-rush') triggered = unique(events.filter((event) => event.type === 'attack' && event.exposed && aggressive(event)).map((event) => event.riderId)) >= 2;
+    if (synergy.id === 'trail-wardens') triggered = unique(events.filter((event) => ['guard', 'heal'].includes(event.type) || defensive(event)).map((event) => event.riderId)) >= 2;
+    if (synergy.id === 'gravewind-riders') triggered = unique(events.filter((event) => event.type === 'attack' && event.mounted).map((event) => event.targetLane)) >= 2;
+    if (synergy.id === 'ashen-trail') triggered = this.countEnemyStatusTypes() >= 3 && living(this.enemies).filter((enemy) => enemy.statuses?.length).length >= 2;
+    if (synergy.id === 'sundown-reapers') triggered = this.hasFocusedTarget(events.filter((event) => event.type === 'attack' && (vulnerable(event) || event.isolated)), 2);
+
+    if (triggered) this.addSurgeMomentum(34);
+  }
+
+  updateSurgeMomentum(delta) {
+    const synergy = this.preparedSynergy;
+    if (!synergy || synergy.id === 'none' || !this.synergySurge) return;
+    if (this.synergySurge.id !== synergy.id) this.synergySurge = { id: synergy.id, momentum: 0, active: false };
+    const aligned = this.getSurgeAlignmentScore(synergy.id);
+    const decay = aligned >= 2 ? 1.2 : aligned === 1 ? 3.2 : 7.5;
+    const previousActive = this.synergySurge.active;
+    this.synergySurge.momentum = Math.max(0, (this.synergySurge.momentum || 0) - decay * delta);
+    this.synergySurge.active = this.synergySurge.momentum >= 60;
+    if (previousActive && !this.synergySurge.active) this.addLog(`${synergy.surgeState} momentum fades.`);
+  }
+
+  addSurgeMomentum(amount) {
+    const synergy = this.preparedSynergy;
+    if (!synergy || synergy.id === 'none') return;
+    if (!this.synergySurge || this.synergySurge.id !== synergy.id) this.synergySurge = { id: synergy.id, momentum: 0, active: false };
+    const wasActive = this.synergySurge.momentum >= 60;
+    this.synergySurge.momentum = Math.min(100, (this.synergySurge.momentum || 0) + amount);
+    this.synergySurge.active = this.synergySurge.momentum >= 60;
+    if (!wasActive && this.synergySurge.active) {
+      this.addLog(`${synergy.name}: ${synergy.surgeState} surges.`);
+      this.addLog(this.getSynergySurgeLog(synergy));
+      this.showSynergySurgeBurst(synergy);
+      this.applySurgeActivationEffects(synergy);
+    }
+  }
+
+  getSurgeAlignmentScore(id) {
+    const party = living(this.getState().party);
+    const mounted = party.filter((rider) => isMounted(rider));
+    const aggressive = (rider) => ['Gunslinger', 'Outlaw', 'Wrangler'].includes(rider.riderStance) || ['Stampede', 'Sprint', 'Wild Frenzy'].includes(rider.horseStance);
+    const defensive = (rider) => ['Iron Rider', 'Wrangler'].includes(rider.riderStance) || ['Defensive Guard', 'Calm Focus'].includes(rider.horseStance);
+    if (id === 'stampede') return mounted.filter(aggressive).length;
+    if (id === 'deadeye') return party.filter((rider) => rider.riderStance === 'Sharpshooter' || ['rifle', 'revolver'].includes(getWeapon(rider).id)).length;
+    if (id === 'frontier-survivors') return party.filter(defensive).length;
+    if (id === 'dust-devils') return party.filter((rider) => ['Gunslinger', 'Wrangler'].includes(rider.riderStance) || rider.horseStance === 'Sprint').length;
+    if (id === 'iron-vultures') return living(this.enemies).filter((enemy) => hasStatus(enemy, 'bleeding-out')).length;
+    if (id === 'outlaw-rush') return party.filter((rider) => rider.riderStance === 'Outlaw' || hasStatus(rider, 'wanted') || !terrainAt(this.mapDef, rider.grid).cover).length;
+    if (id === 'trail-wardens') return party.filter(defensive).length;
+    if (id === 'gravewind-riders') return mounted.length;
+    if (id === 'ashen-trail') return living(this.enemies).filter((enemy) => enemy.statuses?.length).length;
+    if (id === 'sundown-reapers') return living(this.enemies).filter((enemy) => hasStatus(enemy, 'marked') || hasStatus(enemy, 'showdown') || enemy.hp / enemy.maxHp <= 0.5).length;
+    return 0;
+  }
+
+  hasFocusedTarget(events, requiredRiders) {
+    const targets = new Map();
+    events.forEach((event) => {
+      if (!event.targetId) return;
+      if (!targets.has(event.targetId)) targets.set(event.targetId, new Set());
+      targets.get(event.targetId).add(event.riderId);
+    });
+    return [...targets.values()].some((riders) => riders.size >= requiredRiders);
+  }
+
+  countEnemyStatusTypes() {
+    return new Set(living(this.enemies).flatMap((enemy) => (enemy.statuses || []).map((status) => status.name))).size;
+  }
+
+  hasGroupedPressure(events) {
+    const pressure = events.filter((event) => event.type === 'pressure');
+    return pressure.length >= 2 && new Set(pressure.map((event) => event.riderId).filter(Boolean)).size >= 2;
+  }
+
+  isIsolatedEnemy(enemy) {
+    if (!enemy?.grid) return false;
+    return living(this.enemies).filter((other) => other !== enemy && gridDistance(other.grid, enemy.grid) <= 2).length === 0;
+  }
+
+  activateSynergySurge() {
+    this.addSurgeMomentum(100);
+  }
+
+  getSynergySurgeColor(id) {
+    const colors = {
+      stampede: 0xe07b34,
+      deadeye: 0xf0c24f,
+      'frontier-survivors': 0x65a24f,
+      'dust-devils': 0xd6b16d,
+      'iron-vultures': 0xb44732,
+      'outlaw-rush': 0xd95f43,
+      'trail-wardens': 0x5f9bad,
+      'gravewind-riders': 0x8f6bd9,
+      'ashen-trail': 0x9b9384,
+      'sundown-reapers': 0xd9513f,
+    };
+    return colors[id] || palette.yellow;
+  }
+
+  getSynergySurgeLog(synergy) {
+    const lines = {
+      stampede: 'The crew lowers their reins; mounted moves come cheaper and charges shove harder.',
+      deadeye: 'The crew sights as one; marked targets lose cover and precision fire stays steady.',
+      'frontier-survivors': 'The crew digs in; cover holds longer and wounded riders find grit.',
+      'dust-devils': 'The crew rides loose and fast; repositioning and flanks keep tempo high.',
+      'iron-vultures': 'The crew circles blood in the dust; bleeding targets are easier to interrupt.',
+      'outlaw-rush': 'The crew commits to danger; exposed attacks feed ATB and Showdown pressure.',
+      'trail-wardens': 'The crew tightens formation; guards recover faster and defensive moves ease up.',
+      'gravewind-riders': 'The crew rides like a bad omen; Panic cuts enemy momentum.',
+      'ashen-trail': 'The crew kicks up choking dust; statused enemies slow and ailments spread.',
+      'sundown-reapers': 'The crew closes the duel; isolated targets are easier to finish cleanly.',
+    };
+    return lines[synergy.id] || `${synergy.surgeState || 'Surge'} strengthens the posse's rhythm.`;
+  }
+
+  showSynergySurgeBurst(synergy) {
+    const color = this.getSynergySurgeColor(synergy.id);
+    living(this.getState().party).forEach((rider) => {
+      const position = gridToWorld(this.mapDef, rider.grid);
+      const burst = this.add.circle(position.x, position.y + 12, isMounted(rider) ? 44 : 34)
+        .setStrokeStyle(4, color, 0.78)
+        .setFillStyle(color, 0.08)
+        .setDepth(18 + rider.grid.y);
+      this.tweens.add({
+        targets: burst,
+        radius: isMounted(rider) ? 72 : 56,
+        alpha: 0,
+        duration: 620,
+        ease: 'Sine.easeOut',
+        onComplete: () => burst.destroy(),
+      });
+    });
+  }
+
+  applySurgeActivationEffects(synergy) {
+    if (synergy.id === 'frontier-survivors' || synergy.id === 'trail-wardens') {
+      living(this.getState().party).forEach((rider) => this.applySkillStatus(rider, 'guarded'));
+    }
+    if (synergy.id === 'outlaw-rush') {
+      living(this.getState().party).forEach((rider) => {
+        if (rider.riderStance === 'Outlaw' || hasStatus(rider, 'wanted')) this.applySkillStatus(rider, 'quick');
+      });
+    }
   }
 
   drawPriorityOverlay() {
@@ -780,46 +1662,69 @@ export default class BattleScene extends BaseScene {
 
       const position = gridToWorld(this.mapDef, unit.grid);
       const mounted = isMounted(unit);
+      const anim = view.anim || { x: 0, y: 0, scale: 1 };
+      const idle = view.isObjective ? 0 : Math.sin(this.time.now / 520 + unit.grid.x * 0.7 + unit.grid.y * 0.35) * (view.isEnemy ? 0.9 : 1.2);
+      const pose = Math.sin(this.time.now / 340 + unit.grid.x * 0.45 + unit.grid.y * 0.6);
+      const characterScale = view.isObjective ? 1 : anim.scale * (1 + pose * 0.025);
+      const characterTilt = view.isObjective ? 0 : pose * (view.isEnemy ? 1.4 : 1.8) + anim.x * 0.12;
+      const unitX = position.x + anim.x;
+      const unitY = position.y + idle + anim.y;
       const activeAlly = !view.isEnemy && this.getState().party[this.activeIndex] === unit;
       const enemySoon = view.isEnemy && (unit.atb >= 78 || unit.intent);
       const enemyReady = view.isEnemy && (unit.atb >= 96 || unit.intent);
       const activePulse = 0.82 + Math.sin(this.time.now / 180) * 0.12;
+      const surge = this.getActiveSynergySurge();
+      const surgeColor = this.getSynergySurgeColor(surge?.id);
+      const surgePulse = surge ? 0.14 + Math.sin(this.time.now / 260) * 0.05 : 0;
       view.readinessRing
         .setVisible(enemySoon)
         .setPosition(position.x, position.y)
         .setRadius(35)
         .setStrokeStyle(enemyReady ? 5 : 3, palette.red, enemyReady ? 0.9 : 0.58)
         .setDepth(8 + unit.grid.y);
+      view.surgeAura
+        ?.setVisible(Boolean(surge))
+        .setPosition(unitX, unitY + (mounted ? 21 : 18))
+        .setDisplaySize(mounted ? 104 : 78, mounted ? 42 : 34)
+        .setFillStyle(surgeColor, surgePulse)
+        .setStrokeStyle(3, surgeColor, surge ? 0.36 + surgePulse : 0)
+        .setDepth(6 + unit.grid.y);
       view.activeGlow
         ?.setVisible(activeAlly)
-        .setPosition(position.x, position.y + (mounted ? 20 : 18))
+        .setPosition(unitX, unitY + (mounted ? 20 : 18))
         .setDisplaySize(mounted ? 86 : 58, mounted ? 30 : 24)
         .setFillStyle(palette.yellow, activeAlly ? 0.12 + activePulse * 0.08 : 0)
         .setStrokeStyle(2, palette.yellow, activeAlly ? 0.28 + activePulse * 0.18 : 0)
         .setDepth(7 + unit.grid.y);
       view.activeMarker
         ?.setVisible(activeAlly)
-        .setPosition(position.x, position.y - (mounted ? 66 : 58) + Math.sin(this.time.now / 220) * 3)
+        .setPosition(unitX, unitY - (mounted ? 66 : 58) + Math.sin(this.time.now / 220) * 3)
         .setAlpha(activeAlly ? activePulse : 0)
         .setDepth(23 + unit.grid.y);
       view.horseSprite
         ?.setVisible(mounted)
         .setTexture(this.getHorseSpriteKey(unit))
         .setPosition(position.x + 14, position.y + 4)
-        .setDisplaySize(74, 50)
         .setDepth(9 + unit.grid.y);
+      if (view.horseSprite) this.fitBattleHorseSprite(view.horseSprite);
       view.sprite
         .setTexture(this.getUnitTextureKey(unit, view.isEnemy))
-        .setPosition(position.x + (mounted && !view.isEnemy ? -16 : 0), position.y + (mounted && !view.isEnemy ? -14 : 0))
-        .setDisplaySize(mounted && !view.isEnemy ? 48 : mounted ? 76 : 54, mounted && !view.isEnemy ? 48 : mounted ? 60 : 54)
+        .setPosition(unitX + (mounted && !view.isEnemy ? -16 : 0), unitY + (mounted && !view.isEnemy ? -14 : view.isObjective ? -4 : 0))
+        .setDisplaySize(
+          (view.isObjective ? 82 : mounted && !view.isEnemy ? 48 : mounted ? 76 : 54) * characterScale,
+          (view.isObjective ? 62 : mounted && !view.isEnemy ? 48 : mounted ? 60 : 54) * characterScale,
+        )
+        .setAngle(characterTilt)
         .setDepth(10 + unit.grid.y);
       view.label
-        ?.setPosition(position.x, position.y + 34)
+        ?.setPosition(unitX, unitY + 34)
         .setDepth(20 + unit.grid.y)
         .setText(unit.short || unit.name.split(' ')[0]);
       if (view.nameplate) {
-        view.nameplate.group.setPosition(position.x, position.y + 42).setDepth(24 + unit.grid.y);
-        view.nameplate.hpFill.width = 68 * Math.max(0, Math.min(1, unit.hp / unit.maxHp));
+        view.nameplate.group.setPosition(unitX, unitY + (view.isObjective ? 46 : 42)).setDepth(24 + unit.grid.y);
+        view.nameplate.hpFill.width = (view.isObjective ? 84 : 68) * Math.max(0, Math.min(1, unit.hp / unit.maxHp));
+        view.nameplate.hpText?.setText(`HP ${unit.hp}/${unit.maxHp}`);
+        if (view.isObjective) return;
         view.nameplate.atbFill.width = unit.intent
           ? 68 * Math.max(0, Math.min(1, unit.intent.timeLeft / unit.intent.total))
           : 68 * Math.max(0, Math.min(1, unit.atb / 100));
@@ -833,8 +1738,18 @@ export default class BattleScene extends BaseScene {
   updateHud() {
     const state = this.getState();
     const synergy = this.getPartySynergy();
-    this.synergyText.setText(synergy.name);
-    this.synergyDetail.setText(this.truncateText(synergy.description, 54));
+    const surgeMomentum = Math.round(synergy.surge?.momentum || synergy.surgeMomentum || 0);
+    const synergyName = synergy.surge?.active
+      ? synergy.surge.name || synergy.surgeState || synergy.name
+      : synergy.name;
+    const surgeColor = this.getSynergySurgeColor(synergy.id);
+    this.synergyText.setText(this.fitTextToWidth(synergyName || 'No Party Synergy', 28));
+    this.synergyMeterFill.width = 198 * Math.max(0, Math.min(1, surgeMomentum / 100));
+    this.synergyMeterFill.setFillStyle(synergy.surge?.active ? surgeColor : palette.yellow, 1);
+    this.synergyMeterBack.setStrokeStyle(1, synergy.surge?.active ? surgeColor : palette.pale, synergy.surge?.active ? 0.72 : 0.34);
+    this.synergyMeterText.setText(`${surgeMomentum}%`);
+    this.synergyMeterText.setColor(synergy.surge?.active ? '#fff8e7' : '#f5df9b');
+    this.synergyDetail.setText(this.getSurgeInstructionText(synergy, surgeMomentum));
     state.party.forEach((rider, index) => {
       const hud = this.partyHud[index];
       const terrain = terrainAt(this.mapDef, rider.grid);
@@ -845,7 +1760,7 @@ export default class BattleScene extends BaseScene {
       hud.rowBg.setFillStyle(wounded ? palette.red : active ? palette.yellow : palette.shadow, wounded ? 0.22 : active ? 0.18 : 0.16);
       hud.rowBg.setStrokeStyle(active ? 3 : wounded ? 2 : 1, active ? palette.yellow : wounded ? palette.red : palette.pale, active ? 0.86 : wounded ? 0.72 : 0.12);
       hud.name.setText(this.truncateText(rider.name, 22));
-      hud.lane.setText(`${weapon.name} | ${lane}`);
+      hud.detail.setText(this.truncateText(`${weapon.name} | ${rider.riderStance} | ${lane}`, 42));
       hud.mount.setText(isMounted(rider) ? 'MOUNTED' : 'ON FOOT');
       hud.mount.setColor(isMounted(rider) ? '#f5df9b' : '#d8c7a0');
       this.renderStatusBadges(rider, 812, hud.name.y + 19, hud.statusBadges, 2);
@@ -853,8 +1768,8 @@ export default class BattleScene extends BaseScene {
       hud.atbText.setText(`ATB ${Math.round(rider.atb)}%`);
       hud.hpFill.setFillStyle(wounded ? palette.red : palette.green, 1);
       hud.atbFill.setFillStyle(rider.atb >= 100 ? palette.white : palette.yellow, 1);
-      hud.hpFill.width = 104 * Math.max(0, Math.min(1, rider.hp / rider.maxHp));
-      hud.atbFill.width = 76 * Math.max(0, Math.min(1, rider.atb / 100));
+      hud.hpFill.width = 64 * Math.max(0, Math.min(1, rider.hp / rider.maxHp));
+      hud.atbFill.width = 70 * Math.max(0, Math.min(1, rider.atb / 100));
     });
 
     const ready = state.party[this.activeIndex];
@@ -879,7 +1794,37 @@ export default class BattleScene extends BaseScene {
     );
     this.actionPreviewText.setText(this.getActionPreviewText(ready));
     this.refreshInspection();
-    this.logTexts.forEach((text, index) => text.setText(this.log[index] || ''));
+    this.logTexts.forEach((text, index) => text.setText(this.formatBattleLogLine(this.log[index] || '')));
+  }
+
+  getSurgeInstructionText(synergy, surgeMomentum = 0) {
+    if (!synergy || synergy.id === 'none') return 'No surge available.';
+    const prefix = synergy.surge?.active
+      ? `Active ${surgeMomentum}%: `
+      : surgeMomentum > 0
+        ? `${surgeMomentum}%: repeat trigger. `
+        : '';
+    const instructions = {
+      stampede: 'Move, then use 2 mounted aggressive stances or attacks.',
+      deadeye: 'Have 2 rifle, revolver, or Sharpshooter riders attack one target.',
+      'frontier-survivors': 'Use 2 defensive riders, or endure grouped enemy pressure.',
+      'dust-devils': 'Move 2 riders, or land flanking attacks with 2 riders.',
+      'iron-vultures': 'Apply Bleeding Out to 2 enemies.',
+      'outlaw-rush': 'Attack exposed targets with 2 aggressive riders.',
+      'trail-wardens': 'Use guard, healing, or defensive actions with 2 riders.',
+      'gravewind-riders': 'Mounted riders attack enemies in 2 different lanes.',
+      'ashen-trail': 'Put 3 status types across at least 2 enemies.',
+      'sundown-reapers': 'Have 2 riders focus a weak, marked, or isolated target.',
+    };
+    return `${prefix}${instructions[synergy.id] || 'Match this posse pattern to fill surge.'}`;
+  }
+
+  formatBattleLogLine(message) {
+    return this.truncateText(message.replace(/\s+/g, ' ').trim(), 82);
+  }
+
+  fitTextToWidth(value, maxLength) {
+    return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
   }
 
   setCommandMode(mode) {
@@ -893,6 +1838,7 @@ export default class BattleScene extends BaseScene {
   }
 
   handleEscape() {
+    if (this.audioOptionsState || this.audioOptionsJustClosed) return;
     if (this.paused) {
       this.resumeBattle();
       return;
@@ -914,10 +1860,24 @@ export default class BattleScene extends BaseScene {
     this.tweens.pauseAll();
     this.time.paused = true;
     const blocker = this.add.rectangle(480, 360, 960, 720, palette.shadow, 0.58).setDepth(300).setInteractive();
-    const panel = this.add.rectangle(480, 336, 312, 112, palette.leather, 0.96).setDepth(301).setStrokeStyle(3, palette.pale, 0.62);
-    const title = this.add.text(480, 310, 'PAUSED', titleStyle(34, '#fff8e7')).setOrigin(0.5).setDepth(302);
-    const hint = this.add.text(480, 356, 'Press Escape to resume', labelStyle(12, '#f5df9b')).setOrigin(0.5).setDepth(302);
-    this.pauseObjects = [blocker, panel, title, hint];
+    const panel = this.add.rectangle(480, 356, 312, 190, palette.leather, 0.96).setDepth(301).setStrokeStyle(3, palette.pale, 0.62);
+    const title = this.add.text(480, 286, 'PAUSED', titleStyle(34, '#fff8e7')).setOrigin(0.5).setDepth(302);
+    const hint = this.add.text(480, 326, 'Press Escape to resume', labelStyle(12, '#f5df9b')).setOrigin(0.5).setDepth(302);
+    const resumeButton = drawButton(this, 374, 354, 212, 'Resume', () => this.resumeBattle(), true, 'support');
+    const optionsButton = drawButton(this, 374, 402, 212, 'Options', () => this.openBattleAudioOptions(), false, 'stance');
+    [...resumeButton, ...optionsButton].forEach((object) => object.setDepth?.(303));
+    this.pauseObjects = [blocker, panel, title, hint, ...resumeButton, ...optionsButton];
+  }
+
+  openBattleAudioOptions() {
+    this.pauseObjects.forEach((object) => object.destroy());
+    this.pauseObjects = [];
+    this.openAudioOptions(() => {
+      if (!this.paused || this.battleOver) return;
+      this.paused = false;
+      this.time.paused = false;
+      this.pauseBattle();
+    });
   }
 
   resumeBattle() {
@@ -936,7 +1896,7 @@ export default class BattleScene extends BaseScene {
   }
 
   getAllyAtGrid(grid) {
-    return this.getState().party.find((rider) => rider.hp > 0 && rider.grid.x === grid.x && rider.grid.y === grid.y);
+    return [...this.getState().party, ...(this.objectiveUnit ? [this.objectiveUnit] : [])].find((unit) => unit.hp > 0 && unit.grid.x === grid.x && unit.grid.y === grid.y);
   }
 
   selectTile(grid) {
@@ -959,6 +1919,14 @@ export default class BattleScene extends BaseScene {
       )
       .setVisible(true);
     this.refreshInspection();
+    if (
+      this.isTutorialBattle()
+      && this.getTutorialStepKey() === 'field-intel'
+      && grid.x === this.tutorialScript.inspectGrid.x
+      && grid.y === this.tutorialScript.inspectGrid.y
+    ) {
+      this.completeTutorialStep('field-intel');
+    }
   }
 
   getInspectionItems(grid) {
@@ -997,15 +1965,17 @@ export default class BattleScene extends BaseScene {
       const ready = this.getState().party[this.activeIndex];
       const preview = ready && this.targetMode ? this.getActionPreviewLines(ready, enemy, this.targetMode) : [];
       const intent = this.getEnemyIntent(enemy);
-      this.setFieldIntel(
+      this.setFieldIntelColumns(
         enemy.name,
         [
-          `HP ${enemy.hp}/${enemy.maxHp}`,
-          `ATB ${Math.round(enemy.atb)}%`,
-          intent.short.includes('Hold') ? 'HOLDING FIRE' : `DANGER: ${intent.short.toUpperCase()}`,
-          intent.target ? `TARGET: ${intent.target.name}` : '',
+          `HP: ${enemy.hp}/${enemy.maxHp}`,
+          `ATB: ${Math.round(enemy.atb)}%`,
           `Status: ${statuses}`,
-          ...preview.slice(0, 2),
+        ],
+        [
+          intent.short.includes('Hold') ? 'HOLDING FIRE' : `Danger: ${intent.short}`,
+          intent.target ? `Target: ${intent.target.name}` : `Lane: ${getLane(enemy)}`,
+          preview[0] || '',
         ],
       );
       return;
@@ -1013,42 +1983,67 @@ export default class BattleScene extends BaseScene {
 
     if (item.type === 'ally') {
       const ally = item.ally;
-      const horse = getHorse(ally);
-      const weapon = getWeapon(ally);
-      const statuses = this.describeStatuses(ally);
-      this.setFieldIntel(
+      const statuses = this.getStatusBadges(ally) || 'None';
+      this.setFieldIntelColumns(
         ally.name,
         [
-          `HP ${ally.hp}/${ally.maxHp}`,
-          `ATB ${Math.round(ally.atb)}%`,
-          `${isMounted(ally) ? 'MOUNTED' : 'ON FOOT'} | ${weapon.name}`,
-          `${getLane(ally)} lane`,
-          statuses || 'Status: None',
+          `HP: ${ally.hp}/${ally.maxHp}`,
+          `ATB: ${Math.round(ally.atb)}%`,
+          `Status: ${statuses}`,
+        ],
+        [
+          isMounted(ally) ? 'MOUNTED' : 'ON FOOT',
+          `Lane: ${getLane(ally)}`,
+          `Stance: ${ally.riderStance}`,
         ],
       );
       return;
     }
 
-    this.setFieldIntel(
+    this.setFieldIntelColumns(
       item.terrain.label,
       [
         `Lane: ${this.describeLaneAt(item.grid)}`,
-        item.terrain.cover ? `Cover: ${this.getCoverState(item.grid)?.hp || 0}/${this.coverState.get(this.gridKey(item.grid))?.maxHp || 0}` : '',
-        item.terrain.cover ? `Protection: ${Math.round(this.getCoverProtection(item.grid) * 100)}%` : '',
+        item.terrain.cover ? `Cover: ${this.getCoverState(item.grid)?.hp || 0}/${this.coverState.get(this.gridKey(item.grid))?.maxHp || 0}` : 'Cover: None',
+        `Move: ${item.terrain.movementCost}`,
+      ],
+      [
         item.terrain.elevation ? (item.terrain.elevation > 0 ? 'HIGH GROUND' : 'LOW GROUND') : '',
-        `MOVE COST: ${item.terrain.movementCost}`,
-        item.terrain.hazardDamage ? `HAZARD ${item.terrain.hazardDamage}` : '',
-        item.terrain.mountedSlow ? 'MOUNTS SLOWED' : '',
+        item.terrain.cover ? `Protection: ${Math.round(this.getCoverProtection(item.grid) * 100)}%` : '',
+        [item.terrain.hazardDamage ? `Hazard: ${item.terrain.hazardDamage}` : '', item.terrain.mountedSlow ? 'Mounts slowed' : ''].filter(Boolean).join(' / '),
       ],
     );
   }
 
   setFieldIntel(title, lines) {
     this.inspectTitle.setText(title);
+    this.fieldIntelTexts.forEach((text, index) => {
+      text.setPosition(588, 468 + index * 12);
+      text.setStyle({ ...textStyle(9, '#e2d9bd'), wordWrap: { width: 292 } });
+      text.setOrigin(0);
+    });
     const compactLines = lines.filter(Boolean).flatMap((line) => line.toString().split('\n')).slice(0, this.fieldIntelTexts.length);
     this.fieldIntelTexts.forEach((text, index) => {
       const value = compactLines[index] || '';
       text.setText(value ? this.truncateText(value, 46) : '');
+    });
+  }
+
+  setFieldIntelColumns(title, leftLines, rightLines) {
+    this.inspectTitle.setText(title);
+    const rows = [
+      [leftLines[0], rightLines[0]],
+      [leftLines[1], rightLines[1]],
+      [leftLines[2], rightLines[2]],
+    ];
+    this.fieldIntelTexts.forEach((text, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const value = rows[row]?.[column] || '';
+      text.setPosition(column === 0 ? 588 : 738, 472 + row * 23);
+      text.setStyle({ ...labelStyle(9, '#e2d9bd'), wordWrap: { width: column === 0 ? 138 : 146 } });
+      text.setOrigin(0);
+      text.setText(value ? this.truncateText(value, column === 0 ? 24 : 26) : '');
     });
   }
 
@@ -1067,6 +2062,7 @@ export default class BattleScene extends BaseScene {
   }
 
   getObjectiveLines() {
+    if (this.objectiveUnit?.hp > 0) return ['Protect the wagon', `Wagon HP ${this.objectiveUnit.hp}/${this.objectiveUnit.maxHp}`, 'If it falls, defeat'];
     const bounty = this.getActiveBounty();
     if (!bounty) return ['Select unit', 'Select tile', 'Red = danger'];
     const target = this.enemies.find((enemy) => enemy.id === bounty.targetEnemyId);
@@ -1075,17 +2071,19 @@ export default class BattleScene extends BaseScene {
   }
 
   describeLaneAt(grid) {
-    const allyLane = getLane({ side: 'ally', grid });
-    const enemyLane = getLane({ side: 'enemy', grid });
-    return allyLane === enemyLane ? allyLane : `Crew ${allyLane} / Enemy ${enemyLane}`;
+    return getLane({ side: 'ally', grid });
   }
 
   getAllUnits() {
-    return [...this.enemies, ...this.getState().party];
+    return [...this.enemies, ...this.getState().party, ...(this.objectiveUnit ? [this.objectiveUnit] : [])];
   }
 
   startMoveMode() {
     const rider = this.getState().party[this.activeIndex];
+    if (!this.isTutorialActionAllowed('command', { label: 'Move' })) {
+      this.blockTutorialAction();
+      return;
+    }
     if (this.prepPhase) return;
     if (!rider || this.battleOver) return;
     this.targetMode = null;
@@ -1131,6 +2129,11 @@ export default class BattleScene extends BaseScene {
 
   startTargetMode(action) {
     const rider = this.getState().party[this.activeIndex];
+    const label = action.horseAction?.name || action.skill?.name || (action.type === 'combo' ? 'Combo' : 'Attack');
+    if (!this.isTutorialActionAllowed('command', { label })) {
+      this.blockTutorialAction();
+      return;
+    }
     if (this.prepPhase) return;
     if (!rider || this.battleOver) return;
     if (action.type === 'combo' && (!isMounted(rider) || this.getState().showdown < 60)) {
@@ -1152,13 +2155,13 @@ export default class BattleScene extends BaseScene {
   }
 
   drawTargetOverlay() {
-    this.targetOverlay.clear();
+    this.targetOverlay?.clear();
     if (!this.targetMode) return;
     const rider = this.getState().party[this.activeIndex];
-    if (!rider) return;
+    if (!rider || !this.targetOverlay) return;
     const origin = gridToWorld(this.mapDef, rider.grid);
-    this.targetOverlay.fillStyle(palette.red, 0.09);
-    this.targetOverlay.lineStyle(1, palette.red, 0.28);
+    this.targetOverlay.fillStyle(palette.red, 0.14);
+    this.targetOverlay.lineStyle(2, palette.red, 0.46);
     this.getActionRangeCells(rider, this.targetMode).forEach((grid) => {
       const x = this.mapDef.origin.x + grid.x * this.mapDef.renderTileSize;
       const y = this.mapDef.origin.y + grid.y * this.mapDef.renderTileSize;
@@ -1193,8 +2196,10 @@ export default class BattleScene extends BaseScene {
       this.getPlayerThreatArea(rider, enemy, this.targetMode).forEach((grid) => {
         const areaX = this.mapDef.origin.x + grid.x * this.mapDef.renderTileSize;
         const areaY = this.mapDef.origin.y + grid.y * this.mapDef.renderTileSize;
-        this.targetOverlay.fillStyle(palette.red, 0.16);
+        this.targetOverlay.fillStyle(palette.red, 0.24);
         this.targetOverlay.fillRect(areaX, areaY, this.mapDef.renderTileSize, this.mapDef.renderTileSize);
+        this.targetOverlay.lineStyle(3, palette.red, 0.8);
+        this.targetOverlay.strokeRect(areaX + 4, areaY + 4, this.mapDef.renderTileSize - 8, this.mapDef.renderTileSize - 8);
       });
       this.targetOverlay.lineStyle(3, palette.yellow, 0.86);
       this.targetOverlay.strokeCircle(targetPosition.x, targetPosition.y - 4, 23);
@@ -1364,11 +2369,17 @@ export default class BattleScene extends BaseScene {
     const dustPenalty = hasStatus(rider, 'dust-choked') ? 18 : 0;
     const panicPenalty = hasStatus(rider, 'horse-panic') && isMounted(rider) ? 14 : 0;
     const showdownBonus = hasStatus(rider, 'showdown') ? 100 : 0;
+    const deadeyeCoverRelief = hasSynergySurge(this.getPartySynergy(), 'deadeye') && hasStatus(target, 'marked') ? Math.round(coverPenalty * coverProtection * 0.45) : 0;
+    const flankingBonus = hasSynergySurge(this.getPartySynergy(), 'dust-devils') && lane !== targetLane ? 8 : 0;
+    const markedFollowUpBonus = hasSynergySurge(this.getPartySynergy(), 'deadeye') && hasStatus(target, 'marked') ? 6 : 0;
+    const sundownFocusBonus = hasSynergySurge(this.getPartySynergy(), 'sundown-reapers') && (hasStatus(target, 'marked') || this.isIsolatedEnemy(target)) ? 6 : 0;
     const hit = action.type === 'combo'
       ? 100
-      : Math.max(35, Math.min(100, 82 + highGroundBonus + stanceBonus + showdownBonus - Math.round(coverPenalty * coverProtection) - rangePenalty - elevationPenalty - dustPenalty - panicPenalty + (action.type === 'horse-action' ? 4 : 0)));
+      : Math.max(35, Math.min(100, 82 + highGroundBonus + stanceBonus + showdownBonus + deadeyeCoverRelief + flankingBonus + markedFollowUpBonus + sundownFocusBonus - Math.round(coverPenalty * coverProtection) - rangePenalty - elevationPenalty - dustPenalty - panicPenalty + (action.type === 'horse-action' ? 4 : 0)));
     const critBase = weapon.id === 'rifle' ? 14 : weapon.id === 'revolver' ? 12 : weapon.id === 'shotgun' && distance <= 2 ? 13 : 8;
-    const crit = Math.max(0, Math.min(55, critBase + (hasStatus(rider, 'showdown') ? 18 : 0) + (targetTerrain.cover ? -4 : 0) - uphillShotgunPenalty * 3));
+    const markedCrit = hasPartySynergy(this.getPartySynergy(), 'deadeye') && hasStatus(target, 'marked') ? 10 : 0;
+    const surgeCrit = hasSynergySurge(this.getPartySynergy(), 'deadeye') && hasStatus(target, 'marked') ? 4 : 0;
+    const crit = Math.max(0, Math.min(60, critBase + markedCrit + surgeCrit + (hasStatus(rider, 'showdown') ? 18 : 0) + (targetTerrain.cover ? -4 : 0) - uphillShotgunPenalty * 3));
     const statusName = action.horseAction?.status || action.skill?.status || (action.type === 'combo' ? 'showdown' : weapon.id === 'throwable' ? 'snared' : '');
     const status = statusName ? createStatus(statusName).label : '';
     const modifiers = [
@@ -1533,7 +2544,7 @@ export default class BattleScene extends BaseScene {
   getEnemyPlannedIntent(enemy) {
     const threat = this.getEnemyAttackThreat(enemy);
     if (threat) return threat;
-    const targets = living(this.getState().party);
+    const targets = this.getEnemyTargets();
     if (!targets.length) return { short: 'Done', detail: 'No living targets.' };
     if (enemy.id === 'rifleman') return { short: 'Hold Fire', detail: 'Hold ATB for a clear rifle line.' };
     const closest = this.getClosestTarget(enemy, targets);
@@ -1541,8 +2552,22 @@ export default class BattleScene extends BaseScene {
   }
 
   getEnemyAttackThreat(enemy) {
-    const targets = living(this.getState().party);
+    const targets = this.getEnemyTargets();
     if (!targets.length) return null;
+    if (enemy.id === 'sapper') {
+      const target = this.objectiveUnit?.hp > 0 && gridDistance(enemy.grid, this.objectiveUnit.grid) <= 3
+        ? this.objectiveUnit
+        : this.pickEnemyTarget(targets, enemy, 4);
+      return target
+        ? { short: `Blast ${target.short || target.name.split(' ')[0]}`, detail: `Throw powder at ${target.name}.`, target }
+        : null;
+    }
+    if (enemy.id === 'scout') {
+      const target = this.pickEnemyTarget(targets, enemy, 4);
+      return target
+        ? { short: `Harass ${target.short || target.name.split(' ')[0]}`, detail: `Harass ${target.name} with fast pistol fire.`, target }
+        : null;
+    }
     if (enemy.id === 'bruiser') {
       const target = targets.find((candidate) => gridDistance(enemy.grid, candidate.grid) <= 1);
       return target
@@ -1588,6 +2613,7 @@ export default class BattleScene extends BaseScene {
     if (enemy.intent.timeLeft > 0) return;
     enemy.intent = null;
     this.enemyAct(enemy);
+    if (this.isTutorialBattle() && this.getTutorialStepKey() === 'intent') this.completeTutorialStep('intent');
   }
 
   handleMapClick(worldX, worldY) {
@@ -1598,7 +2624,16 @@ export default class BattleScene extends BaseScene {
       const target = this.getUnitAtGrid(grid);
       const rider = this.getState().party[this.activeIndex];
       if (!target && this.canTargetCover(rider, grid, this.targetMode)) {
+        if (!this.isTutorialActionAllowed('target-cover', { target: null, grid })) {
+          this.blockTutorialAction('Target the highlighted cover.');
+          return;
+        }
         this.executeCoverAttack(grid);
+        return;
+      }
+      if (target && !this.isTutorialActionAllowed('target', { target, grid })) {
+        this.selectTile(grid);
+        this.blockTutorialAction('Target the highlighted tutorial enemy.');
         return;
       }
       const reason = target ? this.getTargetBlockReason(rider, target, this.targetMode) : 'No enemy on that tile';
@@ -1613,12 +2648,34 @@ export default class BattleScene extends BaseScene {
     }
 
     if (!this.moveMode || this.battleOver) {
+      if (
+        this.isTutorialBattle()
+        && this.getTutorialStepKey() === 'field-intel'
+        && (grid.x !== this.tutorialScript.inspectGrid.x || grid.y !== this.tutorialScript.inspectGrid.y)
+      ) {
+        this.selectTile(grid);
+        this.blockTutorialAction('Select the highlighted cover tile for Field Intel.');
+        return;
+      }
       this.selectTile(grid);
       return;
     }
 
     const rider = this.getState().party[this.activeIndex];
     if (!rider) return;
+    if (
+      this.isTutorialBattle()
+      && this.getTutorialStepKey() === 'move'
+      && (grid.x !== this.tutorialScript.moveGrid.x || grid.y !== this.tutorialScript.moveGrid.y)
+    ) {
+      this.selectTile(grid);
+      this.blockTutorialAction('Move to the highlighted ridge tile.');
+      return;
+    }
+    if (this.isTutorialBattle() && this.getTutorialStepKey() !== 'move') {
+      this.blockTutorialAction();
+      return;
+    }
     const canMove = this.reachableTiles.some((tile) => tile.x === grid.x && tile.y === grid.y);
     if (!canMove) {
       this.addLog('That tile is out of movement range or occupied.');
@@ -1626,9 +2683,11 @@ export default class BattleScene extends BaseScene {
       return;
     }
 
+    const fromGrid = { ...rider.grid };
     const atbCost = this.getRepositionAtbCost(rider, grid);
     rider.grid = grid;
     rider.atb = Math.max(0, rider.atb - atbCost);
+    if (hasPartySynergy(this.getPartySynergy(), 'dust-devils')) rider.atb = Math.min(100, rider.atb + 5);
     const terrain = terrainAt(this.mapDef, grid);
     if (terrain.hazardDamage) {
       this.applyDamage(rider, terrain.hazardDamage);
@@ -1638,7 +2697,13 @@ export default class BattleScene extends BaseScene {
     this.clearMoveMode();
     this.clearTargetOverlay();
     this.commandMode = 'root';
+    this.playSfx('move');
     this.addLog(`${rider.name} moves to ${getLane(rider)} ${terrain.label} (-${atbCost} ATB).`);
+    this.recordSurgeEvent('move', rider, null, {
+      advanced: grid.x < fromGrid.x,
+      exposed: !terrain.cover,
+    });
+    if (this.isTutorialBattle() && this.getTutorialStepKey() === 'move') this.completeTutorialStep('move');
     this.buildCommandButtons();
     this.updateDynamicViews();
   }
@@ -1648,14 +2713,20 @@ export default class BattleScene extends BaseScene {
     const travelCost = tile?.cost || gridDistance(rider.grid, grid);
     let cost = isMounted(rider) ? 24 : 38;
     cost += travelCost * (isMounted(rider) ? 3 : 6);
+    const destination = terrainAt(this.mapDef, grid);
+    if (hasPartySynergy(this.getPartySynergy(), 'stampede') && isMounted(rider)) cost -= 6;
     if (rider.riderStance === 'Wrangler') cost -= 8;
     if (rider.horseStance === 'Sprint' && isMounted(rider)) cost -= 6;
+    if (hasSynergySurge(this.getPartySynergy(), 'stampede') && isMounted(rider) && !destination.cover && !destination.hazardDamage) cost -= 6;
+    if (hasSynergySurge(this.getPartySynergy(), 'dust-devils')) cost -= 6;
+    if ((hasSynergySurge(this.getPartySynergy(), 'frontier-survivors') || hasSynergySurge(this.getPartySynergy(), 'trail-wardens')) && ['Iron Rider', 'Wrangler'].includes(rider.riderStance)) cost -= 6;
     if (hasStatus(rider, 'horse-panic') && isMounted(rider)) cost += 14;
     if (hasStatus(rider, 'snared')) cost += 10;
     return Math.max(14, Math.min(72, Math.round(cost)));
   }
 
   getUnitTextureKey(unit, isEnemy) {
+    if (unit.objective === 'wagon') return 'sprite-supply-wagon';
     if (isEnemy) return enemySpriteKeys[unit.id] || 'sprite-raider';
     return partySpriteKeys[unit.id] || 'sprite-marshal';
   }
@@ -1667,6 +2738,22 @@ export default class BattleScene extends BaseScene {
   addLog(message) {
     this.log.unshift(message);
     this.log = this.log.slice(0, 6);
+  }
+
+  playActionSound(rider, action = {}) {
+    if (action.type === 'combo') {
+      this.playSfx('combo');
+      return;
+    }
+    if (action.type === 'horse-action') {
+      this.playSfx(`horse-${action.horseAction?.id || 'charge'}`);
+      return;
+    }
+    if (action.type === 'skill' && action.skill?.power < 0) {
+      this.playSfx('item');
+      return;
+    }
+    this.playSfx(getWeapon(rider).id);
   }
 
   getHorseBond(rider) {
@@ -1766,7 +2853,9 @@ export default class BattleScene extends BaseScene {
 
     living(this.getState().party).forEach((rider) => {
       if (!isMounted(rider) || !hasStatus(rider, 'horse-panic')) return;
-      const recoveryChance = (hasEquippedTrait(rider, 'Trusted Mount') ? 0.16 : 0) + (rider.horseStance === 'Calm Focus' ? 0.14 : 0);
+      const synergyRecovery = hasPartySynergy(this.getPartySynergy(), 'frontier-survivors') ? 0.08 : hasPartySynergy(this.getPartySynergy(), 'trail-wardens') ? 0.06 : 0;
+      const surgeRecovery = hasSynergySurge(this.getPartySynergy(), 'trail-wardens') ? 0.1 : 0;
+      const recoveryChance = (hasEquippedTrait(rider, 'Trusted Mount') ? 0.16 : 0) + (rider.horseStance === 'Calm Focus' ? 0.14 : 0) + synergyRecovery + surgeRecovery;
       if (recoveryChance && Math.random() < recoveryChance) {
         this.clearStatus(rider, 'horse-panic');
         rider.atb = Math.min(100, rider.atb + 10);
@@ -1804,8 +2893,11 @@ export default class BattleScene extends BaseScene {
     this.clearTargetOverlay();
     this.commandMode = 'root';
     const stats = this.getActionStats(rider, target, action);
-    const missed = Math.random() * 100 >= stats.hit;
-    const critical = !missed && Math.random() * 100 < stats.crit;
+    this.playActionSound(rider, action);
+    const tutorialStepKey = this.isTutorialBattle() ? this.getTutorialStepKey() : '';
+    const scriptedTutorialHit = this.isScriptedTutorialHit(tutorialStepKey, action, target);
+    const missed = !scriptedTutorialHit && Math.random() * 100 >= stats.hit;
+    const critical = !missed && !scriptedTutorialHit && Math.random() * 100 < stats.crit;
 
     if (action.type === 'horse-action') {
       if (missed) {
@@ -1834,6 +2926,7 @@ export default class BattleScene extends BaseScene {
         this.showCombatImpact(rider, target, { critical, kind: action.horseAction.id });
         this.damageCoverAt(target.grid, this.getCoverDamage(rider, action, false), rider);
         this.addLog(`${rider.name} uses ${action.horseAction.name} with ${getHorse(rider).name} for ${damage}${critical ? ' critical' : ''}.`);
+        this.applySynergyPostHit(rider, target, action, damage, critical, affected);
       }
     } else if (action.type === 'skill') {
       if (missed) {
@@ -1860,6 +2953,7 @@ export default class BattleScene extends BaseScene {
         this.showDamagePopup(target, damage, critical ? 'Crit' : action.skill.status);
         this.damageCoverAt(target.grid, this.getCoverDamage(rider, action, false), rider);
         this.addLog(`${rider.name} uses ${action.skill.name} on ${target.name} for ${damage}${critical ? ' critical' : ''}.`);
+        this.applySynergyPostHit(rider, target, action, damage, critical, [target]);
       }
     } else if (action.type === 'combo') {
       const damage = critical ? Math.round(stats.damage * 1.45) : stats.damage;
@@ -1875,6 +2969,7 @@ export default class BattleScene extends BaseScene {
       this.showCombatImpact(rider, target, { critical, kind: 'combo' });
       this.showDamagePopup(target, damage, critical ? 'Crit' : 'Combo');
       this.addLog(`${getHorse(rider).combo} hits ${target.name} for ${damage}${critical ? ' critical' : ''}.`);
+      this.applySynergyPostHit(rider, target, action, damage, critical, [target]);
     } else {
       if (missed) {
         rider.atb = 0;
@@ -1897,12 +2992,47 @@ export default class BattleScene extends BaseScene {
         this.showDamagePopup(target, damage, critical ? 'Crit' : '');
         this.damageCoverAt(target.grid, this.getCoverDamage(rider, action, false), rider);
         this.addLog(`${rider.name} hits ${target.name} for ${damage}${critical ? ' critical' : ''}.`);
+        this.applySynergyPostHit(rider, target, action, damage, critical, [target]);
       }
     }
 
+    this.recordSurgeEvent('attack', rider, target, {
+      actionType: action.type,
+      critical,
+      missed,
+      flanking: getLane(rider) !== getLane(target),
+      isolated: this.isIsolatedEnemy(target),
+      exposed: !terrainAt(this.mapDef, rider.grid).cover,
+    });
+    let completedTutorialAction = '';
+    if (this.isTutorialBattle()) {
+      if (this.getTutorialStepKey() === 'attack' && action.type === 'attack') completedTutorialAction = 'attack';
+      else if (this.getTutorialStepKey() === 'skill-status' && action.type === 'skill' && action.skill?.id === 'iron-shot') completedTutorialAction = 'skill-status';
+      else if (this.getTutorialStepKey() === 'mark' && action.type === 'skill' && action.skill?.id === 'marshal-mark') completedTutorialAction = 'mark';
+      else if (this.getTutorialStepKey() === 'surge' && action.type === 'horse-action' && action.horseAction?.id === 'charge') {
+        if (!this.getActiveSynergySurge()) this.activateSynergySurge();
+        completedTutorialAction = 'surge';
+      }
+      else if (this.getTutorialStepKey() === 'charge' && action.type === 'horse-action' && action.horseAction?.id === 'charge') completedTutorialAction = 'charge';
+      else if (this.getTutorialStepKey() === 'combo' && action.type === 'combo') completedTutorialAction = 'combo';
+    }
     this.activeIndex = null;
+    if (completedTutorialAction) this.completeTutorialStep(completedTutorialAction);
     this.buildCommandButtons();
     this.updateDynamicViews();
+  }
+
+  isScriptedTutorialHit(stepKey, action, target) {
+    if (!stepKey || !target) return false;
+    const raiderTarget = target.id === this.tutorialScript?.raiderId;
+    const riflemanTarget = target.id === this.tutorialScript?.riflemanId;
+    if (stepKey === 'surge') return raiderTarget && action.type === 'horse-action' && action.horseAction?.id === 'charge';
+    if (stepKey === 'attack') return raiderTarget && action.type === 'attack';
+    if (stepKey === 'skill-status') return raiderTarget && action.type === 'skill' && action.skill?.id === 'iron-shot';
+    if (stepKey === 'mark') return riflemanTarget && action.type === 'skill' && action.skill?.id === 'marshal-mark';
+    if (stepKey === 'charge') return raiderTarget && action.type === 'horse-action' && action.horseAction?.id === 'charge';
+    if (stepKey === 'combo') return raiderTarget && action.type === 'combo';
+    return false;
   }
 
   applyTalentFollowUp(rider, target) {
@@ -1916,6 +3046,76 @@ export default class BattleScene extends BaseScene {
     if (followUp.status && target.hp > 0) this.applySkillStatus(target, followUp.status);
     if (followUp.atb) rider.atb = Math.min(100, rider.atb + followUp.atb);
     this.addLog(followUp.log);
+  }
+
+  applySynergyPostHit(rider, target, action, damage, critical, affected = [target]) {
+    const synergy = this.getPartySynergy();
+    const state = this.getState();
+    if (hasSynergySurge(synergy, 'stampede') && isMounted(rider)) {
+      affected.filter((enemy) => enemy.hp > 0).forEach((enemy) => {
+        if (action.horseAction?.id === 'charge') this.knockBackEnemy(enemy, rider);
+        if (action.type === 'horse-action' && Math.random() < 0.35) this.applySkillStatus(enemy, 'horse-panic');
+      });
+    }
+    if (hasSynergySurge(synergy, 'deadeye') && ['rifle', 'revolver'].includes(getWeapon(rider).id)) {
+      if (target.hp > 0) this.applySkillStatus(target, 'marked');
+      if (target.hp > 0 && hasStatus(target, 'marked')) target.atb = Math.max(0, target.atb - 8);
+    }
+    if (hasSynergySurge(synergy, 'iron-vultures') && hasStatus(target, 'bleeding-out')) {
+      target.atb = Math.min(target.atb, 46);
+      if (gridDistance(rider.grid, target.grid) <= 1) this.showDamagePopup(target, 'Bleed held');
+    }
+    if (hasSynergySurge(synergy, 'outlaw-rush') && (hasStatus(rider, 'wanted') || rider.riderStance === 'Outlaw')) {
+      rider.atb = Math.min(100, rider.atb + 5);
+      state.showdown = Math.min(100, state.showdown + 5);
+    }
+    if (hasPartySynergy(synergy, 'outlaw-rush') && !terrainAt(this.mapDef, rider.grid).cover && ['Gunslinger', 'Outlaw', 'Wrangler'].includes(rider.riderStance)) {
+      rider.atb = Math.min(100, rider.atb + 4);
+    }
+    if (hasSynergySurge(synergy, 'gravewind-riders') && isMounted(rider)) {
+      if (target.hp > 0) target.atb = Math.max(0, target.atb - (hasStatus(target, 'horse-panic') ? 12 : 6));
+    }
+    if (hasSynergySurge(synergy, 'ashen-trail')) {
+      this.spreadStatusFrom(target, 'dust-choked', 1);
+      affected.forEach((enemy) => {
+        if (enemy.hp > 0 && enemy.statuses?.length) enemy.atb = Math.max(0, enemy.atb - 5);
+      });
+    }
+    if (hasSynergySurge(synergy, 'sundown-reapers')) {
+      if (target.hp <= 0) {
+        living(state.party)
+          .filter((ally) => gridDistance(ally.grid, target.grid) <= 3)
+          .forEach((ally) => { ally.atb = Math.min(100, ally.atb + 10); });
+      } else if (hasStatus(target, 'marked') || hasStatus(target, 'showdown')) {
+        target.atb = Math.max(0, target.atb - 12);
+      }
+    }
+    if (hasPartySynergy(synergy, 'sundown-reapers') && this.isIsolatedEnemy(target)) {
+      state.showdown = Math.min(100, state.showdown + 4);
+    }
+    if (damage >= 18 && hasPartySynergy(synergy, 'gravewind-riders') && isMounted(rider) && target.hp > 0 && Math.random() < 0.28) this.applySkillStatus(target, 'horse-panic');
+  }
+
+  knockBackEnemy(enemy, rider) {
+    const dx = Math.sign(enemy.grid.x - rider.grid.x);
+    const dy = Math.sign(enemy.grid.y - rider.grid.y);
+    const next = { x: enemy.grid.x + dx, y: enemy.grid.y + dy };
+    if (!isInBounds(this.mapDef, next)) return;
+    if (this.getAllUnits().some((unit) => unit !== enemy && unit.hp > 0 && unit.grid.x === next.x && unit.grid.y === next.y)) return;
+    enemy.grid = next;
+    enemy.atb = Math.max(0, enemy.atb - 10);
+    this.addLog(`${enemy.name} is knocked back by the charge.`);
+  }
+
+  spreadStatusFrom(source, statusName, range) {
+    if (!source?.grid) return;
+    living(this.enemies)
+      .filter((enemy) => enemy !== source && gridDistance(enemy.grid, source.grid) <= range && !hasStatus(enemy, statusName))
+      .slice(0, 2)
+      .forEach((enemy) => {
+        this.applySkillStatus(enemy, statusName);
+        this.showDamagePopup(enemy, createStatus(statusName).label);
+      });
   }
 
   interruptEnemyIntent(enemy, rider) {
@@ -1935,6 +3135,10 @@ export default class BattleScene extends BaseScene {
   useSkill(skill) {
     const state = this.getState();
     const rider = state.party[this.activeIndex];
+    if (!this.isTutorialActionAllowed('command', { label: skill.name })) {
+      this.blockTutorialAction('Use the highlighted tutorial skill.');
+      return;
+    }
     if (this.prepPhase) return;
     if (!rider || this.battleOver) return;
     this.clearMoveMode();
@@ -1945,9 +3149,10 @@ export default class BattleScene extends BaseScene {
     }
 
     if (skill.target === 'self') {
+      this.playSfx('item');
       this.applySkillStatus(rider, skill.status);
       this.showDamagePopup(rider, skill.status || 'Ready');
-      rider.atb = 0;
+      rider.atb = hasPartySynergy(this.getPartySynergy(), 'trail-wardens') && ['guarded', 'grit'].includes(createStatus(skill.status).name) ? 12 : 0;
       this.worsenBleed(rider);
       this.activeIndex = null;
       this.commandMode = 'root';
@@ -1958,13 +3163,15 @@ export default class BattleScene extends BaseScene {
     }
 
     if (skill.target === 'ally-weakest') {
+      this.playSfx('item');
       const ally = living(state.party).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
       if (!ally) return;
       const healing = healingAmount(ally, Math.abs(skill.power), rider, this.getPartySynergy());
       ally.hp = Math.min(ally.maxHp, ally.hp + healing);
       if (skill.cleanse) ally.statuses = [];
       this.showDamagePopup(ally, healing, 'Heal');
-      rider.atb = 0;
+      this.recordSurgeEvent('heal', rider, ally);
+      rider.atb = hasPartySynergy(this.getPartySynergy(), 'trail-wardens') ? 12 : 0;
       this.worsenBleed(rider);
       this.activeIndex = null;
       this.commandMode = 'root';
@@ -1980,6 +3187,10 @@ export default class BattleScene extends BaseScene {
   useItem(item) {
     const state = this.getState();
     const rider = state.party[this.activeIndex];
+    if (!this.isTutorialActionAllowed('command', { label: `${item.name} x${state.items[item.id] || 0}` })) {
+      this.blockTutorialAction('Use the highlighted tutorial item.');
+      return;
+    }
     if (!rider || this.battleOver) return;
     const count = state.items[item.id] || 0;
     if (count <= 0) {
@@ -1991,9 +3202,11 @@ export default class BattleScene extends BaseScene {
     state.items[item.id] = count - 1;
     if (item.heal) {
       rider.hp = Math.min(rider.maxHp, rider.hp + healingAmount(rider, item.heal, rider, this.getPartySynergy()));
+      this.recordSurgeEvent('heal', rider, rider);
     }
     item.clears?.forEach((status) => this.clearStatus(rider, status));
     item.applies?.forEach((status) => this.applySkillStatus(rider, status));
+    this.playSfx('item');
     if (this.prepPhase) {
       this.commandMode = 'root';
       this.showDamagePopup(rider, item.heal ? item.heal : item.name);
@@ -2002,23 +3215,34 @@ export default class BattleScene extends BaseScene {
       this.updateDynamicViews();
       return;
     }
-    rider.atb = 0;
+    rider.atb = item.heal && hasPartySynergy(this.getPartySynergy(), 'trail-wardens') ? 10 : 0;
     this.worsenBleed(rider);
     this.activeIndex = null;
     this.commandMode = 'root';
     this.showDamagePopup(rider, item.heal ? item.heal : item.name);
     this.addLog(`${rider.name} uses ${item.name}.`);
+    if (this.isTutorialBattle() && this.getTutorialStepKey() === 'item' && item.id === 'bandage') this.completeTutorialStep('item');
     this.buildCommandButtons();
     this.updateDynamicViews();
   }
 
   applySkillStatus(unit, statusName) {
     if (!statusName) return;
+    if (statusName === 'horse-panic' && this.getState().party?.includes(unit) && (hasSynergySurge(this.getPartySynergy(), 'frontier-survivors') || hasSynergySurge(this.getPartySynergy(), 'trail-wardens'))) {
+      if (Math.random() < 0.55) {
+        this.addLog(`${unit.name} steadies through Panic pressure.`);
+        return;
+      }
+    }
     unit.statuses ||= [];
     const next = createStatus(statusName);
     const existing = unit.statuses.find((status) => status.name === next.name);
     if (existing) return;
     unit.statuses.push(next);
+    const isEnemy = this.enemies?.includes(unit);
+    const isAlly = this.getState().party?.includes(unit);
+    if (isEnemy) this.recordSurgeEvent('status', null, unit, { statusName: next.name });
+    if (isAlly && ['guarded', 'grit'].includes(next.name)) this.recordSurgeEvent('guard', unit, null, { statusName: next.name });
   }
 
   clearStatus(unit, statusName) {
@@ -2028,6 +3252,20 @@ export default class BattleScene extends BaseScene {
 
   applyDamage(unit, amount) {
     const nextHp = unit.hp - amount;
+    if (this.shouldPreserveTutorialEnemy(unit, nextHp)) {
+      unit.hp = 28;
+      unit.intent = null;
+      this.showDamagePopup(unit, 'Holds');
+      this.addLog(`${unit.name} stays standing for the tutorial sequence.`);
+      return;
+    }
+    if (nextHp <= 0 && this.isTutorialEncounter() && this.getState().party.includes(unit)) {
+      unit.hp = 1;
+      unit.atb = Math.max(unit.atb || 0, 35);
+      this.showDamagePopup(unit, '1 HP');
+      this.addLog(`${unit.name} holds on for the tutorial.`);
+      return;
+    }
     if (nextHp <= 0 && hasStatus(unit, 'grit')) {
       unit.hp = 1;
       unit.atb = 100;
@@ -2037,8 +3275,21 @@ export default class BattleScene extends BaseScene {
       this.addLog(`${unit.name} refuses to fall.`);
       return;
     }
+    if (nextHp <= 0 && this.getState().party.includes(unit) && hasSynergySurge(this.getPartySynergy(), 'frontier-survivors')) {
+      unit.hp = 1;
+      unit.atb = 100;
+      this.applySkillStatus(unit, 'fatigue');
+      this.showDamagePopup(unit, 'Last Stand');
+      this.addLog(`${unit.name} finds Last Stand grit.`);
+      return;
+    }
     unit.hp = Math.max(0, nextHp);
     if (unit.hp <= 0) unit.intent = null;
+  }
+
+  shouldPreserveTutorialEnemy(unit, nextHp) {
+    if (!this.isTutorialBattle() || unit?.id !== this.tutorialScript?.raiderId || nextHp > 0) return false;
+    return ['surge', 'attack', 'skill-status', 'intent', 'charge'].includes(this.getTutorialStepKey());
   }
 
   getCoverDamage(attacker, action, missed = false) {
@@ -2060,7 +3311,10 @@ export default class BattleScene extends BaseScene {
   damageCoverAt(grid, amount, attacker = null) {
     const cover = this.getCoverState(grid);
     if (!cover || amount <= 0) return false;
-    cover.hp = Math.max(0, cover.hp - amount);
+    const adjustedAmount = hasSynergySurge(this.getPartySynergy(), 'frontier-survivors') || hasSynergySurge(this.getPartySynergy(), 'trail-wardens')
+      ? Math.max(1, Math.round(amount * 0.72))
+      : amount;
+    cover.hp = Math.max(0, cover.hp - adjustedAmount);
     this.refreshCoverVisuals();
     if (cover.hp > 0) {
       this.addLog(`${attacker?.name || 'Fire'} splinters cover (${cover.hp}/${cover.maxHp}).`);
@@ -2068,9 +3322,19 @@ export default class BattleScene extends BaseScene {
     }
     this.mapDef.elements[grid.y][grid.x] = null;
     this.elementLayer?.putTileAt?.(-1, grid.x, grid.y);
-    this.refreshCoverVisuals();
+    this.clearCoverVisualsAt(grid);
     this.addLog(`${attacker?.name || 'Fire'} destroys cover.`);
     return true;
+  }
+
+  clearCoverVisualsAt(grid) {
+    const key = this.gridKey(grid);
+    this.coverDecor.get(key)?.destroy();
+    this.coverDecor.delete(key);
+    (this.coverMarkers.get(key) || []).forEach((object) => object.destroy?.());
+    this.coverMarkers.delete(key);
+    this.coverState.delete(key);
+    this.refreshCoverVisuals();
   }
 
   executeCoverAttack(grid) {
@@ -2079,6 +3343,7 @@ export default class BattleScene extends BaseScene {
     if (!rider || this.battleOver || !this.targetMode || !this.canTargetCover(rider, grid, this.targetMode)) return;
     const action = this.targetMode;
     const damage = this.getCoverDamage(rider, action, false);
+    this.playActionSound(rider, action);
     this.clearMoveMode();
     this.clearTargetOverlay();
     this.commandMode = 'root';
@@ -2087,11 +3352,13 @@ export default class BattleScene extends BaseScene {
     this.worsenBleed(rider);
     this.addHorseBond(rider, action.type === 'horse-action' ? 2 : 0);
     this.activeIndex = null;
+    if (this.isTutorialBattle() && this.getTutorialStepKey() === 'cover') this.completeTutorialStep('cover');
     this.buildCommandButtons();
     this.updateDynamicViews();
   }
 
   resolveEnemyDamage(target, baseAmount, enemy) {
+    if (this.isTutorialEncounter()) baseAmount = Math.max(5, Math.round(baseAmount * 0.45));
     let damage = incomingDamage(target, baseAmount, this.mapDef, this.getPartySynergy());
     const terrain = terrainAt(this.mapDef, target.grid);
     const coverProtection = terrain.cover ? this.getCoverProtection(target.grid) : 0;
@@ -2103,6 +3370,7 @@ export default class BattleScene extends BaseScene {
       this.addLog(`${getHorse(target).name} shields ${target.name}.`);
     }
     this.applyDamage(target, damage);
+    this.recordSurgeEvent('pressure', target, enemy, { exposed: !terrain.cover });
     if (terrain.cover) this.damageCoverAt(target.grid, enemy.id === 'rifleman' ? 7 : enemy.id === 'bruiser' ? 10 : 5, enemy);
     this.resolveHorseCounter(target, enemy);
     return damage;
@@ -2159,6 +3427,7 @@ export default class BattleScene extends BaseScene {
   }
 
   showCombatImpact(attacker, target, { critical = false, missed = false, kind = 'attack' } = {}) {
+    this.animateUnitAction(attacker, target, { critical, missed, kind });
     const start = gridToWorld(this.mapDef, attacker.grid);
     const end = gridToWorld(this.mapDef, target.grid);
     const effect = this.add.graphics().setDepth(72);
@@ -2179,6 +3448,62 @@ export default class BattleScene extends BaseScene {
       ease: 'Cubic.easeOut',
       onComplete: () => effect.destroy(),
     });
+  }
+
+  animateUnitAction(attacker, target, { critical = false, missed = false, kind = 'attack' } = {}) {
+    const attackerView = this.unitViews.get(attacker);
+    const targetView = this.unitViews.get(target);
+    if (!attackerView?.anim || !targetView?.anim) return;
+    const start = gridToWorld(this.mapDef, attacker.grid);
+    const end = gridToWorld(this.mapDef, target.grid);
+    const angle = Math.atan2(end.y - start.y, end.x - start.x);
+    const lungeDistance = kind === 'charge' || kind === 'trample' || kind === 'combo' || kind === 'slam' ? 20 : 10;
+    const recoilDistance = missed ? 3 : critical || kind === 'combo' || kind === 'slam' ? 14 : 8;
+
+    this.tweens.killTweensOf(attackerView.anim);
+    this.tweens.killTweensOf(targetView.anim);
+    attackerView.anim.x = 0;
+    attackerView.anim.y = 0;
+    attackerView.anim.scale = 1;
+    targetView.anim.x = 0;
+    targetView.anim.y = 0;
+    targetView.anim.scale = 1;
+
+    this.tweens.add({
+      targets: attackerView.anim,
+      x: Math.cos(angle) * lungeDistance,
+      y: Math.sin(angle) * lungeDistance - 2,
+      scale: kind === 'charge' || kind === 'combo' ? 1.08 : 1.04,
+      duration: 90,
+      yoyo: true,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        attackerView.anim.x = 0;
+        attackerView.anim.y = 0;
+        attackerView.anim.scale = 1;
+      },
+    });
+
+    this.tweens.add({
+      targets: targetView.anim,
+      x: Math.cos(angle) * recoilDistance,
+      y: Math.sin(angle) * recoilDistance + (missed ? 0 : -3),
+      scale: missed ? 0.98 : 1.07,
+      delay: 80,
+      duration: critical ? 130 : 95,
+      yoyo: true,
+      ease: 'Back.easeOut',
+      onStart: () => {
+        if (!missed) targetView.sprite?.setTintFill?.(critical ? palette.yellow : palette.red);
+      },
+      onComplete: () => {
+        targetView.anim.x = 0;
+        targetView.anim.y = 0;
+        targetView.anim.scale = 1;
+        targetView.sprite?.clearTint?.();
+      },
+    });
+
   }
 
   showDamagePopup(unit, amount, tag = '') {
@@ -2241,7 +3566,20 @@ export default class BattleScene extends BaseScene {
     }
     rider.mounted = !rider.mounted;
     rider.atb = 0;
+    this.playSfx(rider.mounted ? 'mount' : 'dismount');
     this.addLog(`${rider.name} ${rider.mounted ? 'mounts up' : 'dismounts for cover'}.`);
+    if (this.isTutorialBattle()) {
+      if (!rider.mounted && this.getTutorialStepKey() === 'dismount') {
+        this.completeTutorialStep('dismount');
+        this.updateDynamicViews();
+        return;
+      }
+      if (rider.mounted && this.getTutorialStepKey() === 'mount') {
+        this.completeTutorialStep('mount');
+        this.updateDynamicViews();
+        return;
+      }
+    }
     this.activeIndex = null;
     this.buildCommandButtons();
     this.updateDynamicViews();
@@ -2253,6 +3591,9 @@ export default class BattleScene extends BaseScene {
     this.clearMoveMode();
     this.commandMode = 'root';
     rider.riderStance = stance;
+    this.playStanceSound(stance);
+    const completedTutorialStance = this.isTutorialBattle() && this.getTutorialStepKey() === 'stance' && stance === 'Sharpshooter';
+    this.recordSurgeEvent('stance', rider, null, { exposed: !terrainAt(this.mapDef, rider.grid).cover });
     if (this.prepPhase) {
       this.addLog(`${rider.name} prepares in ${rider.riderStance}.`);
       this.buildCommandButtons();
@@ -2262,8 +3603,23 @@ export default class BattleScene extends BaseScene {
     rider.atb = 0;
     this.addLog(`${rider.name} shifts into ${rider.riderStance}.`);
     this.activeIndex = null;
+    if (completedTutorialStance) this.completeTutorialStep('stance');
     this.buildCommandButtons();
     this.updateDynamicViews();
+  }
+
+  playStanceSound(stance) {
+    const tones = {
+      Gunslinger: 'revolver',
+      Sharpshooter: 'rifle',
+      Wrangler: 'melee',
+      Outlaw: 'shotgun',
+      'Iron Rider': 'button-battle',
+    };
+    this.playSfx(tones[stance] || 'button-battle');
+    const voiceKey = stanceVoiceKeys[stance];
+    if (voiceKey && this.sound.get(voiceKey)) this.sound.play(voiceKey, { volume: 0.9 * getAudioSettings().sfx });
+    else this.speakStance(stance);
   }
 
   cycleActiveStance() {
@@ -2274,8 +3630,16 @@ export default class BattleScene extends BaseScene {
   }
 
   enemyAct(enemy) {
-    const targets = living(this.getState().party);
+    const targets = this.getEnemyTargets();
     if (!targets.length) return;
+    if (enemy.id === 'sapper') {
+      this.sapperAct(enemy, targets);
+      return;
+    }
+    if (enemy.id === 'scout') {
+      this.scoutAct(enemy, targets);
+      return;
+    }
     if (enemy.id === 'bruiser') {
       this.bruiserAct(enemy, targets);
       return;
@@ -2285,6 +3649,12 @@ export default class BattleScene extends BaseScene {
       return;
     }
     this.raiderAct(enemy, targets);
+  }
+
+  getEnemyTargets() {
+    return this.objectiveUnit?.hp > 0
+      ? [this.objectiveUnit, ...living(this.getState().party)]
+      : living(this.getState().party);
   }
 
   raiderAct(enemy, targets) {
@@ -2298,9 +3668,40 @@ export default class BattleScene extends BaseScene {
     this.applySkillStatus(target, 'dust-choked');
     enemy.atb = 0;
     this.getState().showdown = Math.min(100, this.getState().showdown + 5);
+    this.playSfx('revolver');
     this.showCombatImpact(enemy, target, { kind: 'dust' });
     this.showDamagePopup(target, damage, 'Dust');
     this.addLog(`${enemy.name} fans dust into ${target.name} for ${damage}.`);
+  }
+
+  scoutAct(enemy, targets) {
+    const target = this.getEnemyAttackThreat(enemy)?.target;
+    if (!target) {
+      this.enemyAdvance(enemy, targets);
+      enemy.atb = 18;
+      return;
+    }
+    const damage = this.resolveEnemyDamage(target, 9 + this.getState().wanted * 2, enemy);
+    enemy.atb = 0;
+    this.playSfx('revolver');
+    this.showCombatImpact(enemy, target, { kind: 'dust' });
+    this.showDamagePopup(target, damage, 'Hit');
+    this.addLog(`${enemy.name} harasses ${target.name} for ${damage}.`);
+  }
+
+  sapperAct(enemy, targets) {
+    const target = this.getEnemyAttackThreat(enemy)?.target;
+    if (!target) {
+      this.enemyAdvance(enemy, targets);
+      enemy.atb = 18;
+      return;
+    }
+    const damage = this.resolveEnemyDamage(target, target.objective === 'wagon' ? 20 + this.getState().wanted * 2 : 13 + this.getState().wanted * 2, enemy);
+    enemy.atb = 0;
+    this.playSfx('throwable');
+    this.showCombatImpact(enemy, target, { kind: 'blast', critical: target.objective === 'wagon' });
+    this.showDamagePopup(target, damage, 'Blast');
+    this.addLog(`${enemy.name} blasts ${target.name} for ${damage}.`);
   }
 
   riflemanAct(enemy, targets) {
@@ -2316,6 +3717,7 @@ export default class BattleScene extends BaseScene {
     this.applySkillStatus(target, 'bleeding-out');
     enemy.atb = 0;
     this.getState().showdown = Math.min(100, this.getState().showdown + 5);
+    this.playSfx('rifle');
     this.showCombatImpact(enemy, target, { kind: 'rifle' });
     this.showDamagePopup(target, damage, 'Bleed');
     this.addLog(`${enemy.name} lines up ${target.name} for ${damage}.`);
@@ -2331,13 +3733,14 @@ export default class BattleScene extends BaseScene {
     const damage = this.resolveEnemyDamage(adjacent, 18 + this.getState().wanted * 2, enemy);
     this.applySkillStatus(adjacent, 'horse-panic');
     enemy.atb = 0;
+    this.playSfx('melee');
     this.showCombatImpact(enemy, adjacent, { kind: 'slam', critical: true });
     this.showDamagePopup(adjacent, damage, 'Panic');
     this.addLog(`${enemy.name} slams ${adjacent.name} for ${damage}.`);
   }
 
   enemyAdvance(enemy, targets) {
-    const target = this.getClosestTarget(enemy, targets);
+    const target = this.objectiveUnit?.hp > 0 ? this.objectiveUnit : this.getClosestTarget(enemy, targets);
     if (!target) return;
     const options = this.getEnemyAdvanceOptions(enemy, target);
     const next = options.sort((a, b) => gridDistance(a, target.grid) - gridDistance(b, target.grid))[0];
@@ -2378,6 +3781,7 @@ export default class BattleScene extends BaseScene {
     const terrain = terrainAt(this.mapDef, target.grid);
     const lane = getLane(target);
     let score = 100 - Math.round((target.hp / target.maxHp) * 100);
+    if (target.objective === 'wagon') score += 120;
     if (hasStatus(target, 'wanted')) score += 45;
     if (hasStatus(target, 'showdown')) score += 22;
     if (isMounted(target)) score += 8;
@@ -2398,7 +3802,8 @@ export default class BattleScene extends BaseScene {
       if (this.encounter.id === 'tutorialDustup') {
         state.tutorial ||= {};
         state.tutorial.battleComplete = true;
-        state.tutorial.townComplete = false;
+        state.tutorial.townComplete = state.tutorial.skipped ? true : false;
+        if (state.tutorial.skipped) state.tutorial.partyMenusComplete = true;
         state.tutorial.active = false;
         state.nextEncounterId = null;
         state.routeProgress = 0;
@@ -2411,29 +3816,79 @@ export default class BattleScene extends BaseScene {
         this.time.delayedCall(1300, () => this.scene.start(scenes.HUB));
         return;
       }
+      state.items ||= { bandage: 0, canteen: 0, whiskey: 0 };
+      state.capturedBounties ||= [];
       const bounty = this.getActiveBounty();
+      const completedBounty = Boolean(this.encounter.bountyId && bounty);
       const allStanding = living(state.party).length === state.party.length;
-      const reward = bounty && state.bountyActive
-        ? bounty.baseReward + (allStanding ? bounty.bonusReward : 0) + state.wanted * 10
-        : 45 + state.wanted * 5;
-      state.money += reward;
+      const cash = this.getFightCashReward(completedBounty);
+      const loot = this.getBattleLoot(completedBounty);
+      state.money += cash;
+      this.applyBattleLoot(state, loot);
+      if (completedBounty) {
+        const target = this.enemies.find((enemy) => enemy.bountyTarget) || this.enemies.find((enemy) => enemy.id === bounty.targetEnemyId);
+        const reward = bounty.baseReward + (allStanding ? bounty.bonusReward : 0) + state.wanted * 10;
+        if (!state.capturedBounties.some((entry) => entry.id === bounty.id)) {
+          state.capturedBounties.push({
+            id: bounty.id,
+            name: bounty.targetName || target?.name || bounty.name,
+            reward,
+          });
+        }
+        state.bountyActive = false;
+        state.activeBountyId = null;
+      }
       state.wanted = Math.max(0, state.wanted - 1);
-      state.bountyActive = false;
-      state.activeBountyId = null;
       state.routeProgress = 0;
       state.party.forEach((rider) => {
         rider.atb = 0;
         this.addHorseBond(rider, 4);
       });
-      this.addLog(`${bounty ? bounty.name : 'Bounty'} cleared. Earned $${reward}.`);
+      const lootText = this.describeBattleLoot(loot);
+      if (completedBounty) this.addLog(`Captured ${bounty.targetName}. Turn them in at the Sheriff Station.`);
+      this.addLog(`Fight spoils: $${cash}${lootText ? `, ${lootText}` : ''}.`);
+      this.saveCurrentProgress();
       this.updateDynamicViews();
       this.time.delayedCall(1300, () => this.scene.start(scenes.HUB));
-    } else if (!living(state.party).length) {
+    } else if (!living(state.party).length || (this.objectiveUnit && this.objectiveUnit.hp <= 0)) {
       this.battleOver = true;
-      this.addLog('The crew is routed. Press R to retry, or return to town.');
+      this.addLog(this.objectiveUnit?.hp <= 0 ? 'The wagon is destroyed. Press R to retry, or return to town.' : 'The crew is routed. Press R to retry, or return to town.');
       this.updateDynamicViews();
       this.drawEndButtons('Defeat');
     }
+  }
+
+  getFightCashReward(completedBounty = false) {
+    const state = this.getState();
+    const wantedBonus = Math.max(0, state.wanted || 0) * 3;
+    const base = completedBounty ? 24 : 34;
+    const spread = completedBounty ? 16 : 22;
+    return base + Math.floor(Math.random() * spread) + wantedBonus;
+  }
+
+  getBattleLoot(completedBounty = false) {
+    const loot = { bandage: 0, canteen: 0, whiskey: 0 };
+    const pool = completedBounty
+      ? ['bandage', 'bandage', 'canteen', 'whiskey']
+      : ['bandage', 'canteen', 'canteen', 'whiskey'];
+    const rolls = 1 + (Math.random() < 0.45 ? 1 : 0) + (completedBounty && Math.random() < 0.35 ? 1 : 0);
+    for (let roll = 0; roll < rolls; roll += 1) {
+      const id = pool[Math.floor(Math.random() * pool.length)];
+      loot[id] += 1;
+    }
+    return Object.fromEntries(Object.entries(loot).filter(([, amount]) => amount > 0));
+  }
+
+  applyBattleLoot(state, loot) {
+    Object.entries(loot).forEach(([id, amount]) => {
+      state.items[id] = (state.items[id] || 0) + amount;
+    });
+  }
+
+  describeBattleLoot(loot) {
+    return Object.entries(loot)
+      .map(([id, amount]) => `${amount} ${itemCatalog[id]?.name || id}`)
+      .join(', ');
   }
 
   drawEndButtons(title) {
