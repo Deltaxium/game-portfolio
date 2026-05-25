@@ -57,6 +57,7 @@ export default class BattleScene extends BaseScene {
     this.tutorialObjects = [];
     this.tutorialStep = 0;
     this.tutorialKey = '';
+    this.tutorialRenderKey = '';
     this.currentTutorialTip = null;
     this.dismissedTutorialKeys = new Set();
     this.battleTutorialClosed = false;
@@ -856,6 +857,7 @@ export default class BattleScene extends BaseScene {
       this.tutorialStep = index;
       this.currentTutorialTip = null;
       this.tutorialKey = '';
+      this.tutorialRenderKey = '';
       this.tutorialObjects.forEach((object) => object.destroy());
       this.tutorialObjects = [];
       this.prepareTutorialStep();
@@ -871,6 +873,7 @@ export default class BattleScene extends BaseScene {
     this.tutorialStep += 1;
     this.currentTutorialTip = null;
     this.tutorialKey = '';
+    this.tutorialRenderKey = '';
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.prepareTutorialStep();
@@ -1082,7 +1085,7 @@ export default class BattleScene extends BaseScene {
       {
         key: 'atb',
         title: 'ATB Flow',
-        body: 'ATB fills in real time. A rider acts at 100%, then spending a command lowers their ATB.',
+        body: 'ATB means Active Time Battle. It fills in real time; a rider acts at 100%, then spending a command lowers their ATB.',
         point: { x: 836, y: 260 },
         ready: () => !this.prepPhase,
       },
@@ -1207,14 +1210,25 @@ export default class BattleScene extends BaseScene {
         this.tutorialObjects.forEach((object) => object.destroy());
         this.tutorialObjects = [];
         this.tutorialKey = '';
+        this.tutorialRenderKey = '';
       }
       return;
     }
     this.currentTutorialTip = tip;
-    if (this.tutorialKey === tip.key) return;
+    const tutorialPoint = this.getTutorialPoint(tip);
+    const renderKey = [
+      tip.key,
+      this.commandMode,
+      this.moveMode ? 'move' : '',
+      this.targetMode?.label || '',
+      Math.round(tutorialPoint.x),
+      Math.round(tutorialPoint.y),
+    ].join('|');
+    if (this.tutorialRenderKey === renderKey) return;
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.tutorialKey = tip.key;
+    this.tutorialRenderKey = renderKey;
     const existing = new Set(this.children.list);
     const panelW = 340;
     const panelH = 154;
@@ -1223,16 +1237,57 @@ export default class BattleScene extends BaseScene {
     this.add.text(panelX + 20, panelY + 18, tip.title, titleStyle(18)).setDepth(211);
     this.add.text(panelX + 20, panelY + 50, tip.body, { ...textStyle(10, '#fff1bf'), wordWrap: { width: 292 }, lineSpacing: 2 }).setDepth(211);
     const arrow = this.add.graphics().setDepth(211);
-    this.drawTutorialArrow(arrow, panelX + panelW - 28, panelY + panelH / 2, tip.point.x, tip.point.y);
+    this.drawTutorialArrow(arrow, panelX + panelW - 28, panelY + panelH / 2, tutorialPoint.x, tutorialPoint.y);
     const actionStep = ['field-intel', 'stance', 'move', 'dismount', 'mount', 'surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'intent', 'charge', 'combo'].includes(tip.key);
+    const canGoBack = this.getPreviousTutorialStepIndex() >= 0;
     const next = actionStep
       ? drawButton(this, panelX + 202, panelY + 102, 112, 'Do This', () => this.blockTutorialAction('Use the highlighted tutorial command.'), true, 'support')
       : drawButton(this, panelX + 202, panelY + 102, 112, 'Got It', () => this.dismissBattleTutorialTip(), true, 'support');
-    const skip = actionStep
+    const back = canGoBack
+      ? drawButton(this, panelX + 30, panelY + 102, 82, 'Back', () => this.goBackBattleTutorial(), false, 'default')
+      : [];
+    const skip = actionStep || canGoBack
       ? []
       : drawButton(this, panelX + 30, panelY + 102, 96, 'Skip', () => this.closeBattleTutorial(), false, 'default');
-    [...next, ...skip].forEach((object) => object.setDepth?.(212));
+    [...next, ...back, ...skip].forEach((object) => object.setDepth?.(212));
     this.tutorialObjects = this.children.list.filter((object) => !existing.has(object));
+  }
+
+  getTutorialPoint(tip) {
+    const step = tip?.key || '';
+    const targetGrid = this.getTutorialTargetGridForStep(step);
+    const targetPoint = targetGrid ? gridToWorld(this.mapDef, targetGrid) : null;
+    const commandPoint = (label) => this.getTutorialCommandPoint(label);
+    if (step === 'prep') return commandPoint('Begin') || tip.point;
+    if (step === 'stance') return this.commandMode === 'stances' ? commandPoint('Sharpshooter') || tip.point : commandPoint('Stance') || tip.point;
+    if (step === 'move') return this.moveMode && targetPoint ? targetPoint : commandPoint('Move') || tip.point;
+    if (step === 'dismount') return this.commandMode === 'horse' ? commandPoint('Dismount') || tip.point : commandPoint('Horse') || tip.point;
+    if (step === 'mount') return commandPoint('Mount') || commandPoint('Mount Up') || tip.point;
+    if (['surge', 'charge'].includes(step)) return this.targetMode ? targetPoint || tip.point : this.commandMode === 'horse' ? commandPoint('Charge') || tip.point : commandPoint('Horse') || tip.point;
+    if (step === 'cover') return this.targetMode ? targetPoint || tip.point : commandPoint('Attack') || tip.point;
+    if (step === 'attack') return this.targetMode ? targetPoint || tip.point : commandPoint('Attack') || tip.point;
+    if (step === 'skill-status') return this.targetMode ? targetPoint || tip.point : this.commandMode === 'skills' ? commandPoint('Iron Shot') || tip.point : commandPoint('Skill') || tip.point;
+    if (step === 'mark') return this.targetMode ? targetPoint || tip.point : this.commandMode === 'skills' ? commandPoint('Marshal Mark') || tip.point : commandPoint('Skill') || tip.point;
+    if (step === 'item') return this.commandMode === 'items' ? commandPoint('Bandage') || tip.point : commandPoint('Item') || tip.point;
+    if (step === 'combo') return this.targetMode ? targetPoint || tip.point : this.commandMode === 'horse' ? commandPoint('Combo') || tip.point : commandPoint('Horse') || tip.point;
+    return tip.point;
+  }
+
+  getTutorialCommandPoint(labelStart) {
+    if (!labelStart) return null;
+    const buttonText = this.commandButtons.find((object) => object?.type === 'Text' && object.text?.startsWith(labelStart));
+    if (!buttonText) return null;
+    const bounds = buttonText.getBounds();
+    return { x: bounds.centerX, y: bounds.centerY };
+  }
+
+  getTutorialTargetGridForStep(stepKey = this.getTutorialStepKey()) {
+    if (!this.tutorialScript) return null;
+    if (['cover', 'field-intel'].includes(stepKey)) return this.tutorialScript.coverGrid;
+    if (['surge', 'attack', 'skill-status', 'charge', 'combo'].includes(stepKey)) return this.tutorialScript.raiderGrid;
+    if (['mark', 'intent'].includes(stepKey)) return this.tutorialScript.riflemanGrid;
+    if (stepKey === 'move') return this.tutorialScript.moveGrid;
+    return null;
   }
 
   drawTutorialArrow(arrow, startX, startY, endX, endY) {
@@ -1252,17 +1307,35 @@ export default class BattleScene extends BaseScene {
   }
 
   getTutorialPanelPosition(tip, panelW, panelH) {
-    const defaultPosition = { x: 42, y: 106 };
-    const point = tip?.point || { x: 0, y: 0 };
-    const padding = 28;
-    const overlapsPoint = (
-      point.x >= defaultPosition.x - padding
-      && point.x <= defaultPosition.x + panelW + padding
-      && point.y >= defaultPosition.y - padding
-      && point.y <= defaultPosition.y + panelH + padding
-    );
-    if (['mark', 'intent'].includes(tip?.key) || overlapsPoint) return { x: 500, y: 92 };
-    return defaultPosition;
+    return { x: 42, y: 106 };
+  }
+
+  getPreviousTutorialStepIndex() {
+    const steps = this.getTutorialStepSequence();
+    for (let index = this.tutorialStep - 1; index >= 0; index -= 1) {
+      if (steps[index]?.ready()) return index;
+    }
+    return -1;
+  }
+
+  goBackBattleTutorial() {
+    const previous = this.getPreviousTutorialStepIndex();
+    if (previous < 0) {
+      this.blockTutorialAction('No previous tutorial step is available in this phase.');
+      return;
+    }
+    const currentKey = this.getTutorialStepSequence()[this.tutorialStep]?.key;
+    const previousKey = this.getTutorialStepSequence()[previous]?.key;
+    if (currentKey) this.dismissedTutorialKeys.delete(currentKey);
+    if (previousKey) this.dismissedTutorialKeys.delete(previousKey);
+    this.tutorialStep = previous;
+    this.currentTutorialTip = null;
+    this.tutorialKey = '';
+    this.tutorialRenderKey = '';
+    this.tutorialObjects.forEach((object) => object.destroy());
+    this.tutorialObjects = [];
+    this.prepareTutorialStep();
+    this.updateDynamicViews();
   }
 
   dismissBattleTutorialTip() {
@@ -1276,6 +1349,7 @@ export default class BattleScene extends BaseScene {
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.tutorialKey = '';
+    this.tutorialRenderKey = '';
     this.advanceBattleTutorialScript(dismissedKey);
   }
 
@@ -1288,6 +1362,7 @@ export default class BattleScene extends BaseScene {
     state.tutorial.partyMenusComplete = true;
     state.tutorial.active = false;
     this.tutorialKey = '';
+    this.tutorialRenderKey = '';
     this.currentTutorialTip = null;
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
@@ -1297,6 +1372,7 @@ export default class BattleScene extends BaseScene {
     this.battleTutorialClosed = true;
     this.currentTutorialTip = null;
     this.tutorialKey = '';
+    this.tutorialRenderKey = '';
     this.tutorialObjects.forEach((object) => object.destroy());
     this.tutorialObjects = [];
     this.clearMoveMode();
@@ -2101,9 +2177,13 @@ export default class BattleScene extends BaseScene {
     this.moveCostTexts = [];
     if (!this.moveMode) return;
     const rider = this.getState().party[this.activeIndex];
+    const tutorialMoveGrid = this.isTutorialBattle() && this.getTutorialStepKey() === 'move'
+      ? this.tutorialScript.moveGrid
+      : null;
     this.moveOverlay.fillStyle(palette.green, 0.22);
     this.moveOverlay.lineStyle(2, palette.green, 0.72);
     this.reachableTiles.forEach((grid) => {
+      if (tutorialMoveGrid && (grid.x !== tutorialMoveGrid.x || grid.y !== tutorialMoveGrid.y)) return;
       const x = this.mapDef.origin.x + grid.x * this.mapDef.renderTileSize;
       const y = this.mapDef.origin.y + grid.y * this.mapDef.renderTileSize;
       this.moveOverlay.fillRect(x, y, this.mapDef.renderTileSize, this.mapDef.renderTileSize);
@@ -2160,9 +2240,14 @@ export default class BattleScene extends BaseScene {
     const rider = this.getState().party[this.activeIndex];
     if (!rider || !this.targetOverlay) return;
     const origin = gridToWorld(this.mapDef, rider.grid);
+    const tutorialStep = this.isTutorialBattle() ? this.getTutorialStepKey() : '';
+    const tutorialTargetGrid = this.getTutorialTargetGridForStep(tutorialStep);
+    const shouldLimitTutorialTargets = Boolean(tutorialTargetGrid && ['cover', 'attack', 'skill-status', 'mark', 'surge', 'charge', 'combo'].includes(tutorialStep));
+    const isTutorialTargetGrid = (grid) => !shouldLimitTutorialTargets || (grid.x === tutorialTargetGrid.x && grid.y === tutorialTargetGrid.y);
     this.targetOverlay.fillStyle(palette.red, 0.14);
     this.targetOverlay.lineStyle(2, palette.red, 0.46);
     this.getActionRangeCells(rider, this.targetMode).forEach((grid) => {
+      if (shouldLimitTutorialTargets && !isTutorialTargetGrid(grid)) return;
       const x = this.mapDef.origin.x + grid.x * this.mapDef.renderTileSize;
       const y = this.mapDef.origin.y + grid.y * this.mapDef.renderTileSize;
       this.targetOverlay.fillRect(x, y, this.mapDef.renderTileSize, this.mapDef.renderTileSize);
@@ -2172,6 +2257,7 @@ export default class BattleScene extends BaseScene {
       if (cover.hp <= 0) return;
       const [coverX, coverY] = key.split(',').map(Number);
       const grid = { x: coverX, y: coverY };
+      if (shouldLimitTutorialTargets && (tutorialStep !== 'cover' || !isTutorialTargetGrid(grid))) return;
       if (!this.canTargetCover(rider, grid, this.targetMode)) return;
       const x = this.mapDef.origin.x + coverX * this.mapDef.renderTileSize;
       const y = this.mapDef.origin.y + coverY * this.mapDef.renderTileSize;
@@ -2181,6 +2267,7 @@ export default class BattleScene extends BaseScene {
       this.targetOverlay.strokeRect(x + 12, y + 12, this.mapDef.renderTileSize - 24, this.mapDef.renderTileSize - 24);
     });
     living(this.enemies).forEach((enemy) => {
+      if (shouldLimitTutorialTargets && (tutorialStep === 'cover' || !isTutorialTargetGrid(enemy.grid))) return;
       const targetPosition = gridToWorld(this.mapDef, enemy.grid);
       const x = this.mapDef.origin.x + enemy.grid.x * this.mapDef.renderTileSize;
       const y = this.mapDef.origin.y + enemy.grid.y * this.mapDef.renderTileSize;

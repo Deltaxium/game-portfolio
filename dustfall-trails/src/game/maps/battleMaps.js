@@ -29,7 +29,7 @@ export const battleMaps = {
     elements: [
       ['ridge', null, null, 'road', 'road', null, 'ridge', null],
       [null, null, 'brokenSign', 'road', null, null, 'barrelCover', 'highRidge'],
-      [null, 'gully', null, 'road', 'brokenSign', null, null, null],
+      [null, 'gully', null, 'road', 'road', null, null, null],
       ['barrelCover', null, null, 'road', 'road', 'ridge', null, null],
       [null, null, 'mud', 'barrelCover', 'road', 'ridge', null, null],
       ['ridge', null, null, 'road', 'road', null, 'brokenSign', null],

@@ -25,6 +25,14 @@ Before editing, read:
 - Preserve the split license: source code is MIT, creative game IP is All Rights Reserved.
 - When delegating or splitting work, use the role definitions in `.agents/roles`.
 
+## Browser Inspection
+
+- For local visual QA, use Playwright against the running local server and save screenshots under `/tmp`, such as `/tmp/dustfall-shot/`.
+- Phaser UI is rendered into a WebGL canvas. Inspect screenshots and canvas dimensions rather than expecting DOM nodes for buttons, tutorial panels, or arrows.
+- Current browser executable is `/usr/bin/chromium-browser`; launch Playwright Chromium with `executablePath: '/usr/bin/chromium-browser'` and args `['--no-sandbox', '--disable-dev-shm-usage']`.
+- The Chromium install is Snap-based in this WSL environment. If Snap runtime/profile errors appear, rerun the Playwright script with escalated permissions instead of changing repo files.
+- Keep inspection scripts temporary unless the user asks to add a committed test harness.
+
 ## Deployment
 
 Pushes to `main` deploy to both:

@@ -41,3 +41,37 @@ npm run dev
 ```
 
 Project docs start at `cinderworks/AGENTS.md` and `cinderworks/docs/INDEX.md`.
+
+## Browser Inspection
+
+Use Playwright with the local game server to inspect rendered Phaser screens and capture screenshots.
+Phaser renders most UI into a WebGL canvas, so DOM inspection only confirms the page shell and canvas;
+visual bugs should be checked from screenshots.
+
+Current WSL setup:
+
+- Global Playwright CLI: `playwright --version`
+- Browser executable: `/usr/bin/chromium-browser`
+- Chromium is installed through Snap, so Playwright scripts may need to run outside strict sandboxing.
+
+Recommended flow:
+
+```bash
+cd dustfall-trails
+npm run dev -- --host 127.0.0.1
+```
+
+In another shell, run a temporary Playwright script from `/tmp` and launch Chromium with:
+
+```js
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: '/usr/bin/chromium-browser',
+  args: ['--no-sandbox', '--disable-dev-shm-usage'],
+});
+```
+
+Write screenshots to `/tmp/dustfall-shot/` or another temp folder, not into the repo. Capture the
+title screen first, then click through the game canvas with canvas-relative coordinates and save each
+state. Console errors and warnings should be logged; WebGL `ReadPixels` performance warnings are
+expected during screenshots.
