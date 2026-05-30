@@ -454,7 +454,7 @@ export const encounters = {
         atb: 0,
         speed: 2,
         statuses: [],
-        grid: { x: 2, y: 3 },
+        grid: { x: 3, y: 3 },
       },
     ],
   },

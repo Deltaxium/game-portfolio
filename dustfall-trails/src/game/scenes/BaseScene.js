@@ -34,6 +34,7 @@ export default class BaseScene extends Phaser.Scene {
     this.textures.get(desertTileset.key)?.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.createHorseCutoutTextures();
     this.ensureMusicFocusHandling();
+    this.ensureAudioUnlockHandling();
     this.ensureAudioOptionsInput();
     this.ensureAutoSaveHandling();
     this.applyAudioSettings(getAudioSettings());
@@ -112,6 +113,18 @@ export default class BaseScene extends Phaser.Scene {
     window.addEventListener('pageshow', resume);
   }
 
+  ensureAudioUnlockHandling() {
+    if (this.registry.get('audioUnlockHandlingReady')) return;
+    this.registry.set('audioUnlockHandlingReady', true);
+    const unlock = () => {
+      this.sound.context?.resume?.();
+      this.resumeActiveMusicAfterFocus();
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+    window.addEventListener('touchstart', unlock, { passive: true });
+  }
+
   resumeActiveMusicAfterFocus() {
     this.sound.context?.resume?.();
     [
@@ -176,6 +189,10 @@ export default class BaseScene extends Phaser.Scene {
     music.setData?.('baseVolume', baseVolume);
     music.play();
     this.registry.set(registryKey, music);
+    const resumeResult = this.sound.context?.resume?.();
+    resumeResult?.finally?.(() => {
+      if (!music.pendingRemove && !music.isPlaying) music.play();
+    });
     return music;
   }
 

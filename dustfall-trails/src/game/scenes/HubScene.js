@@ -26,7 +26,8 @@ export default class HubScene extends BaseScene {
     this.uiObjects = [];
     this.pauseObjects = [];
     this.saveMessage = '';
-    this.townTutorialStep = state.tutorial?.townStep || 0;
+    this.townTutorialStep = Math.min(state.tutorial?.townStep || 0, this.getTownTutorialSteps().length - 1);
+    state.tutorial.townStep = this.townTutorialStep;
     this.townTutorialHint = '';
     this.notebookCategory = null;
     this.notebookTopic = null;
@@ -398,7 +399,8 @@ export default class HubScene extends BaseScene {
 
   isTownTutorialActionAllowed(actionType = '', actionId = '') {
     if (!this.isTownTutorialActive()) return true;
-    if (actionType === 'tutorial-next') return true;
+    if (actionType === 'tutorial-back') return this.townTutorialStep > 0;
+    if (actionType === 'tutorial-next') return !this.getCurrentTownTutorialStep()?.action;
     const action = this.getCurrentTownTutorialStep()?.action;
     if (!action || !actionType) return false;
     if (action.type !== actionType) return false;
@@ -420,7 +422,7 @@ export default class HubScene extends BaseScene {
     if (action.id && action.id !== actionId) return false;
     if (action.ids && !action.ids.includes(actionId)) return false;
     if (actionType === 'pause') return false;
-    this.advanceTownTutorial();
+    this.advanceTownTutorial({ fromAction: true });
     return true;
   }
 
@@ -591,36 +593,6 @@ export default class HubScene extends BaseScene {
         action: { type: 'prepare' },
       },
       {
-        title: 'Rider Cards',
-        body: 'Each rider card shows talent, equipped weapon, stance, horse, bond, HP, and trait identity. View Build opens the detailed setup for that rider.',
-        building: 'stable',
-      },
-      {
-        title: 'Weapons And Stances',
-        body: 'Arm changes the weapon role. Style changes rider stance: Gunslinger, Sharpshooter, Wrangler, Outlaw, or Iron Rider. These shape range, ATB, defense, lanes, and damage.',
-        building: 'stable',
-      },
-      {
-        title: 'Horses',
-        body: 'Horse changes the assigned mount. Mounted riders gain horse actions and combos. Horse Style changes behavior such as Stampede, Sprint, Defensive Guard, Calm Focus, or Wild Frenzy.',
-        building: 'stable',
-      },
-      {
-        title: 'Traits',
-        body: 'Combat traits and bond traits add passive effects and tags. Tags feed party synergy, while individual traits improve specific weapons, statuses, movement, healing, or defense.',
-        building: 'stable',
-      },
-      {
-        title: 'Horse Bonds',
-        body: 'Horse bond is tracked per horse. Bond improves mounted performance and rewards using the same mount across fights.',
-        building: 'stable',
-      },
-      {
-        title: 'Posse Synergy',
-        body: 'The synergy panel shows the crew-wide identity formed by weapons, stances, horses, and trait tags. Ride Out locks the prepared synergy for the next trail.',
-        building: 'stable',
-      },
-      {
         title: 'Notebook',
         body: 'The Notebook on the street is a permanent reference. It groups reminders under broad topics like Combat, Status Effects, Movement, Posse Synergy, and Resources.',
         building: 'town',
@@ -658,23 +630,45 @@ export default class HubScene extends BaseScene {
       const arrow = this.add.graphics().setDepth(211);
       this.drawTownTutorialArrow(arrow, panelX + panelW - 32, panelY + panelH / 2, point.x, point.y);
     }
-    drawButton(
-      this,
-      panelX + 408,
-      panelY + 74,
-      94,
-      this.townTutorialStep >= steps.length - 1 ? 'Done' : 'Next',
-      () => this.advanceTownTutorial(),
-      true,
-      'support',
-      { sound: 'button-town' },
-    ).forEach((object) => object.setDepth?.(212));
+    const canGoBack = this.townTutorialStep > 0;
+    const needsAction = Boolean(step.action);
+    if (canGoBack) {
+      drawButton(
+        this,
+        panelX + (needsAction ? 408 : 298),
+        panelY + 74,
+        94,
+        'Back',
+        () => this.goBackTownTutorial(),
+        false,
+        'default',
+        { sound: 'button-town' },
+      ).forEach((object) => object.setDepth?.(212));
+    }
+    if (!needsAction) {
+      drawButton(
+        this,
+        panelX + 408,
+        panelY + 74,
+        94,
+        this.townTutorialStep >= steps.length - 1 ? 'Done' : 'Next',
+        () => this.advanceTownTutorial(),
+        true,
+        'support',
+        { sound: 'button-town' },
+      ).forEach((object) => object.setDepth?.(212));
+    }
   }
 
-  advanceTownTutorial() {
+  advanceTownTutorial({ fromAction = false } = {}) {
     const steps = this.getTownTutorialSteps();
     this.townTutorialHint = '';
     const state = this.getState();
+    const step = steps[Math.min(this.townTutorialStep, steps.length - 1)];
+    if (step?.action && !fromAction) {
+      this.blockTownTutorialAction();
+      return;
+    }
     if (this.townTutorialStep >= steps.length - 1) {
       state.tutorial.townComplete = true;
       state.tutorial.townStep = 0;
@@ -683,9 +677,19 @@ export default class HubScene extends BaseScene {
     }
     this.townTutorialStep += 1;
     state.tutorial.townStep = this.townTutorialStep;
-    const step = steps[Math.min(this.townTutorialStep, steps.length - 1)];
-    this.applyTownTutorialView(step);
+    const nextStep = steps[Math.min(this.townTutorialStep, steps.length - 1)];
+    this.applyTownTutorialView(nextStep);
     this.drawTownUi();
+  }
+
+  goBackTownTutorial() {
+    if (!this.isTownTutorialActive() || this.townTutorialStep <= 0) return;
+    const state = this.getState();
+    this.townTutorialStep -= 1;
+    state.tutorial.townStep = this.townTutorialStep;
+    this.townTutorialHint = '';
+    this.applyTownTutorialView(this.getCurrentTownTutorialStep());
+    this.drawTownUi(state);
   }
 
   applyTownTutorialView(step = this.getCurrentTownTutorialStep()) {

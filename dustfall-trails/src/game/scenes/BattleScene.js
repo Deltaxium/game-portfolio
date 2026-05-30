@@ -802,7 +802,7 @@ export default class BattleScene extends BaseScene {
       moveGrid: { x: 5, y: 4 },
       docGrid: { x: 7, y: 4 },
       raiderGrid: { x: 3, y: 2 },
-      riflemanGrid: { x: 2, y: 3 },
+      riflemanGrid: { x: 3, y: 3 },
       coverGrid: { x: 6, y: 1 },
       raiderId: 'raider',
       riflemanId: 'rifleman',
@@ -834,7 +834,7 @@ export default class BattleScene extends BaseScene {
     if (step === 'item') return kind === 'command' && (detail.label === 'Item' || detail.label.startsWith('Bandage'));
     if (step === 'intent') return kind === 'wait';
     if (step === 'charge') return (kind === 'command' && ['Horse', 'Charge'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
-    if (step === 'combo') return (kind === 'command' && ['Horse', 'Combo'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.raiderId);
+    if (step === 'combo') return (kind === 'command' && ['Horse', 'Combo'].includes(detail.label)) || (kind === 'target' && detail.target?.id === this.tutorialScript.riflemanId);
     return true;
   }
 
@@ -1176,8 +1176,8 @@ export default class BattleScene extends BaseScene {
       {
         key: 'combo',
         title: 'Showdown Combo',
-        body: 'Showdown is charged. Open Horse, choose Combo, then strike the Practice Raider. Combos spend Showdown for a mounted burst.',
-        point: raiderPoint,
+        body: 'Showdown is charged. Open Horse, choose Combo, then strike the marked Rifleman. Combos spend Showdown for a mounted burst.',
+        point: riflePoint,
         ready: () => !this.prepPhase,
       },
       {
@@ -1241,7 +1241,7 @@ export default class BattleScene extends BaseScene {
     const actionStep = ['field-intel', 'stance', 'move', 'dismount', 'mount', 'surge', 'cover', 'attack', 'skill-status', 'mark', 'item', 'intent', 'charge', 'combo'].includes(tip.key);
     const canGoBack = this.getPreviousTutorialStepIndex() >= 0;
     const next = actionStep
-      ? drawButton(this, panelX + 202, panelY + 102, 112, 'Do This', () => this.blockTutorialAction('Use the highlighted tutorial command.'), true, 'support')
+      ? []
       : drawButton(this, panelX + 202, panelY + 102, 112, 'Got It', () => this.dismissBattleTutorialTip(), true, 'support');
     const back = canGoBack
       ? drawButton(this, panelX + 30, panelY + 102, 82, 'Back', () => this.goBackBattleTutorial(), false, 'default')
@@ -1284,8 +1284,8 @@ export default class BattleScene extends BaseScene {
   getTutorialTargetGridForStep(stepKey = this.getTutorialStepKey()) {
     if (!this.tutorialScript) return null;
     if (['cover', 'field-intel'].includes(stepKey)) return this.tutorialScript.coverGrid;
-    if (['surge', 'attack', 'skill-status', 'charge', 'combo'].includes(stepKey)) return this.tutorialScript.raiderGrid;
-    if (['mark', 'intent'].includes(stepKey)) return this.tutorialScript.riflemanGrid;
+    if (['surge', 'attack', 'skill-status', 'charge'].includes(stepKey)) return this.tutorialScript.raiderGrid;
+    if (['mark', 'intent', 'combo'].includes(stepKey)) return this.tutorialScript.riflemanGrid;
     if (stepKey === 'move') return this.tutorialScript.moveGrid;
     return null;
   }
@@ -3118,7 +3118,7 @@ export default class BattleScene extends BaseScene {
     if (stepKey === 'skill-status') return raiderTarget && action.type === 'skill' && action.skill?.id === 'iron-shot';
     if (stepKey === 'mark') return riflemanTarget && action.type === 'skill' && action.skill?.id === 'marshal-mark';
     if (stepKey === 'charge') return raiderTarget && action.type === 'horse-action' && action.horseAction?.id === 'charge';
-    if (stepKey === 'combo') return raiderTarget && action.type === 'combo';
+    if (stepKey === 'combo') return riflemanTarget && action.type === 'combo';
     return false;
   }
 

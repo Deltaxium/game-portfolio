@@ -18,6 +18,10 @@ const copyTargets = [
     from: path.join(rootDir, 'dustfall-trails', 'dist'),
     to: path.join(outputDir, 'dustfall-trails'),
   },
+  {
+    from: path.join(rootDir, 'unnamed', 'dist'),
+    to: path.join(outputDir, 'blackwake-tactics'),
+  },
 ];
 
 await rm(outputDir, { recursive: true, force: true });

@@ -19,6 +19,11 @@ export function unlockAudio() {
   return Promise.resolve(context);
 }
 
+function hasTransientUserActivation() {
+  if (typeof navigator === 'undefined' || !navigator.userActivation) return true;
+  return navigator.userActivation.isActive;
+}
+
 function makeGain(context, destination, volume, start, end, duration) {
   const gain = context.createGain();
   gain.gain.setValueAtTime(start, context.currentTime);
@@ -160,6 +165,9 @@ export function playSfx(name) {
     },
   };
   const effect = effects[name] || effects['button-town'];
+  const context = getAudioContext();
+  if (!context) return;
+  if (context.state === 'suspended' && !hasTransientUserActivation()) return;
   unlockAudio().then((context) => {
     if (!context || context.state !== 'running') return;
     effect();
