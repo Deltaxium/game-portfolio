@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: |
             cinderworks/package-lock.json
             dustfall-trails/package-lock.json
+            blackwake-tactics/package-lock.json
+            stormwake-isles/package-lock.json
 
       - name: Install Cinderworks dependencies
         run: npm ci
@@ -47,6 +49,22 @@ jobs:
       - name: Build Dustfall Trails
         run: npm run build
         working-directory: dustfall-trails
+
+      - name: Install Blackwake Tactics dependencies
+        run: npm ci
+        working-directory: blackwake-tactics
+
+      - name: Build Blackwake Tactics
+        run: npm run build
+        working-directory: blackwake-tactics
+
+      - name: Install Stormwake Isles dependencies
+        run: npm ci
+        working-directory: stormwake-isles
+
+      - name: Build Stormwake Isles
+        run: npm run build
+        working-directory: stormwake-isles
 
       - name: Build combined website
         run: node scripts/build-site.mjs
