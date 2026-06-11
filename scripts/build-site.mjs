@@ -19,8 +19,16 @@ const copyTargets = [
     to: path.join(outputDir, 'dustfall-trails'),
   },
   {
-    from: path.join(rootDir, 'unnamed', 'dist'),
+    from: path.join(rootDir, 'blackwake-tactics', 'dist'),
     to: path.join(outputDir, 'blackwake-tactics'),
+  },
+  {
+    from: path.join(rootDir, 'stormwake-isles', 'dist'),
+    to: path.join(outputDir, 'stormwake-isles'),
+  },
+  {
+    from: path.join(rootDir, 'unnamed'),
+    to: path.join(outputDir, 'unnamed'),
   },
 ];
 

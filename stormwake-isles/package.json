@@ -1,0 +1,21 @@
+{
+  "name": "stormwake-isles",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:items": "node scripts/item-xp-smoke.mjs",
+    "test:puzzles": "node scripts/puzzle-icon-audit.mjs",
+    "test:relics": "node scripts/relic-behavior-audit.mjs",
+    "test:enemies": "node scripts/enemy-visual-audit.mjs",
+    "test:combat": "node scripts/combat-balance-audit.mjs"
+  },
+  "dependencies": {
+    "vite": "^5.4.19",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {}
+}
